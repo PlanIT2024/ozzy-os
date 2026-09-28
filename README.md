@@ -30,7 +30,7 @@ cd ~/ozzy-os
 npm run node
 ```
 
-The node reports status; it receives no Discord or Claude credentials over the protocol. The brain binds to `127.0.0.1:8787` by default. Both processes stop on Ctrl+C. Run one brain per checkout: `data/brain.lock` prevents concurrent cost/session writers. After a hard crash, check that its recorded PID is gone before removing the stale lock.
+The node reports status; it receives no Discord or Claude credentials over the protocol. The brain binds to `127.0.0.1:8787` by default. Both processes stop on Ctrl+C. Run one brain per checkout: `data/brain.lock` prevents concurrent cost/session writers. After a hard crash, the next start reclaims the lock if its recorded PID is no longer running. Live, inaccessible or invalid PIDs remain protected. SIGINT/SIGTERM clean up the lock after shutdown.
 
 ## Discord behavior
 

@@ -1,7 +1,10 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { inspect } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { Client, GatewayIntentBits, Partials, ActionRowBuilder, ButtonBuilder, ButtonStyle, SlashCommandBuilder, REST, Routes, MessageFlags } from 'discord.js';
-import { required } from '../shared.js';
+import { ROOT, required } from '../shared.js';
 export function splitMessage(text, limit = 2000) {
   const chunks = []; text = String(text);
   while (text.length > limit) {
@@ -61,20 +64,26 @@ export class ApprovalRelay {
   }
   close() { for (const p of this.pending.values()) void p.finish(false, 'brain shutting down'); }
 }
-export async function machinesText(hub) {
+export async function machinesText(hub, onError = () => {}) {
   const machines = hub.list(); if (!machines.length) return 'No machines registered yet. My ring is listening.';
   return (await Promise.all(machines.map(async machine => {
     if (!machine.online) return `⚫ ${machine.machine}: offline`;
     try {
       const s = await hub.request(machine.machine, 'status');
       return `🟢 ${machine.machine}: online\n${JSON.stringify(s, null, 2)}`;
-    } catch (e) { return `🟡 ${machine.machine}: ${e.message}`; }
+    } catch (e) { onError(e, { machine: machine.machine }); return `🟡 ${machine.machine}: my status sensor hit a snag. Try again in a moment, Ozzy.`; }
   }))).join('\n\n');
 }
-export function createDiscord({ runner, hub, budget, env = process.env, client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.DirectMessages], partials: [Partials.Channel] }) }) {
+export function createDiscord({ runner, hub, budget, env = process.env, auditFile = path.join(ROOT, 'data/audit.log'), client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.DirectMessages], partials: [Partials.Channel] }) }) {
   const owner = env.OWNER_DISCORD_ID, bitChannel = env.BIT_CHANNEL_ID;
   const approvals = new ApprovalRelay(owner);
-  const fail = error => console.error('Discord operation failed:', error.name, error.code || '');
+  const fail = (error, context = {}) => {
+    console.error('Discord operation failed:', context, error);
+    try {
+      fs.mkdirSync(path.dirname(auditFile), { recursive: true, mode: 0o700 });
+      fs.appendFileSync(auditFile, JSON.stringify({ time: new Date().toISOString(), event: 'discord_error', ...context, error: inspect(error, { depth: null }), stack: error?.stack || String(error) }) + '\n', { mode: 0o600 });
+    } catch (auditError) { console.error('Could not write Discord error audit:', auditError); }
+  };
   client.on('error', fail);
   client.on('messageCreate', async message => {
     if (!acceptsMessage(message, owner, bitChannel)) return;
@@ -88,11 +97,23 @@ export function createDiscord({ runner, hub, budget, env = process.env, client =
     } catch (e) { fail(e); await sendText(channel, 'My ring hit a snag. Check the brain console, Ozzy.').catch(fail); }
   });
   client.on('interactionCreate', async interaction => {
-    if (interaction.user.id !== owner || !allowedLocation(interaction.channel, bitChannel)) return;
+    const ownerPassed = interaction.user.id === owner;
+    const context = { command: interaction.commandName || interaction.customId || `type:${interaction.type}`, userId: interaction.user.id, ownerPassed };
+    console.log(`Discord interaction: command=${context.command} user=${context.userId} owner=${ownerPassed}`);
+    if (!ownerPassed) return;
     try {
-      if (interaction.isButton()) { await approvals.handle(interaction); return; }
-      if (!interaction.isChatInputCommand()) return;
-      await interaction.deferReply();
+      if (interaction.isChatInputCommand()) {
+        // Acknowledge before channel resolution, validation, or any command work.
+        await interaction.deferReply();
+      } else {
+        if (interaction.isButton() && allowedLocation(interaction.channel, bitChannel)) await approvals.handle(interaction);
+        return;
+      }
+      const channel = interaction.channel || await client.channels.fetch(interaction.channelId);
+      if (!allowedLocation(channel, bitChannel)) {
+        await interaction.editReply({ content: 'Catch me in #bit or one of its threads, Ozzy.', allowedMentions: { parse: [] } });
+        return;
+      }
       let response;
       switch (interaction.commandName) {
         case 'mood': {
@@ -102,16 +123,23 @@ export function createDiscord({ runner, hub, budget, env = process.env, client =
         case 'budget': {
           const s = budget.status(); response = `Juice meter · ${s.month}: $${s.spent.toFixed(4)} / $${s.cap.toFixed(2)}${s.uncertain ? ' — reconciliation needed after an interrupted run' : ''}`; break;
         }
-        case 'machines': response = await machinesText(hub); break;
+        case 'machines': response = await machinesText(hub, (error, details) => fail(error, { ...context, ...details })); break;
         case 'reset':
-          if (!interaction.channel.isDMBased() && !interaction.channel.isThread()) response = 'Use /reset inside the thread you want to refresh.';
+          if (!channel.isDMBased() && !channel.isThread()) response = 'Use /reset inside the thread you want to refresh.';
           else { await runner.reset(interaction.channelId); response = 'Fresh thoughts, same orb. This conversation starts a new session next message.'; }
           break;
         default: response = 'Unknown command.';
       }
       const chunks = splitMessage(response); await interaction.editReply({ content: chunks.shift(), allowedMentions: { parse: [] } });
       for (const content of chunks) await interaction.followUp({ content, allowedMentions: { parse: [] } });
-    } catch (e) { fail(e); if (interaction.deferred) await interaction.editReply('My ring hit a snag. Check the brain console.').catch(fail); }
+    } catch (error) {
+      fail(error, context);
+      const response = { content: 'My ring hit a snag, Ozzy. Try again in a moment.', allowedMentions: { parse: [] } };
+      try {
+        if (interaction.deferred || interaction.replied) await interaction.editReply(response);
+        else await interaction.reply({ ...response, flags: MessageFlags.Ephemeral });
+      } catch (replyError) { fail(replyError, { ...context, stage: 'error_reply' }); }
+    }
   });
   return { client, approvals, async start() { await client.login(env.DISCORD_TOKEN); }, close() { approvals.close(); client.destroy(); } };
 }
