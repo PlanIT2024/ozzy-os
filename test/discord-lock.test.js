@@ -45,7 +45,7 @@ test('slow /machines acknowledges before >3s status collection', async t => {
   } });
   await handle(request);
   assert.ok(elapsed < 3000); assert.ok(Date.now() - start >= 3100);
-  assert.equal(request.calls[0], 'defer'); assert.match(request.calls[1][1].content, /OZZY-AI: online/);
+  assert.equal(request.calls[0], 'defer'); assert.match(request.calls[1][1].content, /OZZY-AI 🟢 up/);
 });
 
 test('every slash command defers first and command failures edit reply with full audit', async t => {

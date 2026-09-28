@@ -42,3 +42,11 @@ Follow README setup, register guild commands, and run `npm run brain` plus `npm 
 - The requested guild-scoped slash commands operate in the server. Owner DMs support ordinary messages; slash commands are not globally registered.
 - Only Linux was executed here. Node code uses portable Node/systeminformation APIs; macOS and Windows need live verification on those machines.
 - No optional systemd unit was installed, remote repository created, or branch pushed. Instructions and a unit example are in README.
+
+## Phase 1 polish validation
+
+Full suite: **27 passed, 0 failed**. Added a real, no-prompt SDK initialization test: the non-built-in skill list exactly matched the folders in the fixture `bit/skills`, with a competing user skill/settings source present. No model/API call was made by this test. The explicit skill allowlist, project-only source, bundled/synced skill disabling and rejection of other project configuration were exercised.
+
+Additional passing checks: `~/.claude/**` and nested Claude configuration writes denied; owner chat (“approved”, “sounds good”) cannot resolve a pending skill write; non-owner buttons denied and owner ✅ accepted; concise machine summaries preserve raw status; Linux/macOS/Windows mount fixtures retain real storage and exclude pseudo mounts; node retry logs occur only on connection state changes; ready identity logging; login, gateway and disallowed-intent errors produce full diagnostics, non-zero exit status and lock cleanup. The existing >3-second slash test and real SIGINT/SIGTERM lock cleanup tests also passed.
+
+These lifecycle and Discord interaction checks use test clients, not live messages. Existing local memory and skills were preserved and excluded from the polish commit.

@@ -20,6 +20,7 @@ export function createPermissions({ root = ROOT, approve = async () => false, no
       if (fs.realpathSync(alias) !== path.join(root, 'bit/skills')) throw new Error('Invalid skills alias');
       target = path.join(root, 'bit/skills', path.relative(alias, target));
     }
+    if (path.relative(root, target).split(path.sep).some(part => ['.claude', '.agents'].includes(part))) throw new Error('Claude configuration paths are denied');
     if (!inside(root, target)) throw new Error('Outside OZZY OS');
     let cursor = root;
     for (const segment of path.relative(root, target).split(path.sep).filter(Boolean)) {

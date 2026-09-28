@@ -36,7 +36,7 @@ The node reports status; it receives no Discord or Claude credentials over the p
 
 Only `OWNER_DISCORD_ID` is handled, in #bit, its threads, or DMs. Other senders are ignored without replies. Every owner top-level text message in #bit starts a thread. Replies resume that thread's SDK session; DMs use a session per DM channel. Attachment-only messages are ignored in Phase 1.
 
-- `/machines`: registered machines, online/offline state, and live status.
+- `/machines`: one human-readable line per machine, for example `OZZY-AI 🟢 up 3d · CPU 8% · RAM 6/50 GB · disk 6%`. Disk usage is for the root/system volume, falling back to the first usable volume. Model tools still receive structured status for every usable disk.
 - `/mood personality:hype`: saves the default voice. Choices: chill, hype, chaotic, gremlin, sage. Sage overrides it from 22:00 through 04:59 in `TZ`.
 - `/budget`: this month's estimated spend and cap.
 - `/reset`: clears the current thread/DM session mapping, preserving long-term memory.
@@ -51,9 +51,9 @@ Only Read, Write, Edit, Glob, Grep and Skill are exposed as built-ins. An in-pro
 
 Paths must be explicit and remain within permitted trees. Traversal, symlinks, hard-linked files and special files are rejected. Searches inspect descendant paths too, so a nested symlink cannot leak data. The one exception is the host-created `.claude/skills` discovery alias, verified to point to `bit/skills`. Permission callbacks are application-level checks, not an OS sandbox against other local processes changing files during execution. Do not let untrusted local programs mutate this checkout while bIT runs.
 
-Create skills as `bit/skills/<name>/SKILL.md`. The runner enables only `settingSources: ['project']` and creates `.claude/skills` as a symlink (junction on Windows) to that folder. User settings and user skills are not loaded; SDK state is isolated in `data/claude`. The agent cannot alter settings. SDK subprocess environment excludes Discord and node tokens. `strictMcpConfig` limits MCP loading to the supplied machine server.
+Create skills as `bit/skills/<name>/SKILL.md`. The runner enables only `settingSources: ['project']` and creates `.claude/skills` as a symlink (junction on Windows) to that folder. It supplies an explicit skill allowlist matching the folder names, disables bundled skills and cloud-synced skills/plugins, and rejects other project `.claude` configuration (settings, hooks, plugins and legacy commands). Each skill's frontmatter name must match its folder. User settings and user skills are not loaded; SDK state is isolated in `data/claude`. Discord text is passed as ordinary conversation, so it cannot dispatch Claude Code built-in slash commands. The agent cannot alter settings. SDK subprocess environment excludes Discord and node tokens. `strictMcpConfig` limits MCP loading to the supplied machine server.
 
-Every skill write/edit shows the full proposal as an attached JSON file with owner-only ✅/❌ buttons. Denial, cancellation, or ten-minute expiry denies the operation. Paths are checked again after approval. Skills need YAML frontmatter with `name` and `description`; optional `argument-hint`, `disable-model-invocation` and `user-invocable` are accepted. Other metadata, shell preprocessing, hooks and subagent directives are rejected in Phase 1. bIT can create ordinary instruction skills after approval; executing scripts remains out of scope. Keep project settings and manually installed skills under your control.
+Only the owner pressing the Discord ✅ button can authorize a skill change. Chat text such as “approved” or “sounds good” never authorizes a pending write. Every skill write/edit shows the full proposal as an attached JSON file with owner-only ✅/❌ buttons. Denial, cancellation, or ten-minute expiry denies the operation. Paths are checked again after approval. Skills need YAML frontmatter with `name` and `description`; optional `argument-hint`, `disable-model-invocation` and `user-invocable` are accepted. Other metadata, shell preprocessing, hooks and subagent directives are rejected in Phase 1. bIT can create ordinary instruction skills after approval; executing scripts remains out of scope. Keep project settings and manually installed skills under your control.
 
 ## Budget and persistence
 
@@ -71,7 +71,7 @@ On the new machine configure only `BRAIN_URL`, `NODE_TOKEN`, and `MACHINE_NAME` 
 
 The stable protocol uses authenticated WebSockets, an identity-bound `hello`, 30-second heartbeats, 90-second offline detection, and `{type:'req', id, method, params}` / `{type:'res', id, ok, result|error}` messages. Requests time out after 10 seconds. Duplicate authenticated connections replace the old socket without marking the new one offline. Nodes reconnect with exponential backoff and jitter and detect dead connections using ping/pong. Only `status` is implemented. To add capabilities later, extend method dispatch and authorization while retaining the envelope; no screen, input, camera or shell placeholder exists.
 
-Status includes uptime seconds, CPU load percent/core count, memory bytes, filesystem bytes/usage, battery if present, logged-in users, node process user, and OS version. Some machines have no interactive login or battery; those fields can be empty/null.
+Status includes uptime seconds, CPU load percent/core count, memory bytes, filesystem bytes/usage, battery if present, logged-in users, node process user, and OS version. Pseudo/system mounts such as efivars, `/boot/efi`, tmpfs and snap loop devices are excluded. Some machines have no interactive login or battery; those fields can be empty/null. Node connection logs appear only when the connection state changes; failed retries do not repeat connection messages.
 
 ## Optional user systemd service
 
@@ -104,6 +104,10 @@ journalctl --user -u bit-brain -f
 ```
 
 Optional `loginctl enable-linger "$USER"` keeps user services running after logout. No service is installed automatically.
+
+## Runtime logs
+
+The brain logs `Discord connected as <tag>` on ready and one debug line per incoming message/interaction with author, channel and filter results. Command failures receive an in-character response and full console/audit diagnostics. Login and fatal gateway errors stop the brain with a non-zero exit status after cleanup; disallowed intents include a Developer Portal hint. Temporary gateway disconnects retain Discord’s normal reconnect behavior.
 
 ## Validation
 

@@ -95,7 +95,7 @@ test('real hub and OZZY-AI node: authentication, live status, offline, timeout',
   hub.timeout = 10000;
   const status = await hub.request('OZZY-AI', 'status'); assert.ok(status.uptime > 0); assert.ok(status.memory.total > 0); assert.ok(status.os.release);
   console.log('LIVE OZZY-AI status:', JSON.stringify({ uptime: status.uptime, cpu: status.cpu, memory: status.memory, os: status.os }));
-  assert.match(await machinesText(hub), /OZZY-AI: online/);
+  assert.match(await machinesText(hub), /OZZY-AI 🟢 up/);
   await assert.rejects(hub.request('OZZY-AI', 'shell'), /Unsupported/);
   node.close(); await pause(30); assert.equal(hub.list()[0].online, false);
   await assert.rejects(hub.request('OZZY-AI', 'status'), /offline/);
@@ -153,7 +153,7 @@ test('hub rejects machine identity spoofing, expires stale peers and node reconn
   const stale = await open(); stale.send(JSON.stringify(hello));
   await new Promise(resolve => stale.once('close', resolve)); assert.equal(hub.list()[0].online, false);
   let connections = 0;
-  const node = startNode({ url, token, machine: 'OZZY-AI', heartbeat: 10, log: s => { if (s.includes('connected')) connections++; } }); t.after(() => node.close());
+  const node = startNode({ url, token, machine: 'OZZY-AI', heartbeat: 10, log: s => { if (s.endsWith(' connected')) connections++; } }); t.after(() => node.close());
   for (let i = 0; i < 100 && !hub.list()[0].online; i++) await pause(10);
   hub.nodes.get('OZZY-AI').ws.terminate();
   for (let i = 0; i < 250 && connections < 2; i++) await pause(10);

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { inspect } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
-import { Client, GatewayIntentBits, Partials, ActionRowBuilder, ButtonBuilder, ButtonStyle, SlashCommandBuilder, REST, Routes, MessageFlags } from 'discord.js';
+import { Client, Events, GatewayIntentBits, Partials, ActionRowBuilder, ButtonBuilder, ButtonStyle, SlashCommandBuilder, REST, Routes, MessageFlags } from 'discord.js';
 import { ROOT, required } from '../shared.js';
 export function splitMessage(text, limit = 2000) {
   const chunks = []; text = String(text);
@@ -64,15 +64,22 @@ export class ApprovalRelay {
   }
   close() { for (const p of this.pending.values()) void p.finish(false, 'brain shutting down'); }
 }
+export function machineLine(machine, status) {
+  const number = (n, suffix = '') => Number.isFinite(n) ? `${Math.round(n)}${suffix}` : '?';
+  const seconds = Number(status.uptime);
+  const up = !Number.isFinite(seconds) ? '?' : seconds >= 86400 ? `${Math.floor(seconds / 86400)}d` : seconds >= 3600 ? `${Math.floor(seconds / 3600)}h` : `${Math.floor(seconds / 60)}m`;
+  const gb = n => number(Number.isFinite(n) ? n / 1e9 : NaN);
+  const disks = status.disks || [];
+  const primary = disks.find(d => d.mount === '/' || /^c:[\\/]?$/i.test(d.mount)) || disks[0];
+  return `${machine} 🟢 up ${up} · CPU ${number(status.cpu?.loadPercent, '%')} · RAM ${gb(status.memory?.used)}/${gb(status.memory?.total)} GB · disk ${number(primary?.usePercent, '%')}`;
+}
 export async function machinesText(hub, onError = () => {}) {
   const machines = hub.list(); if (!machines.length) return 'No machines registered yet. My ring is listening.';
   return (await Promise.all(machines.map(async machine => {
-    if (!machine.online) return `⚫ ${machine.machine}: offline`;
-    try {
-      const s = await hub.request(machine.machine, 'status');
-      return `🟢 ${machine.machine}: online\n${JSON.stringify(s, null, 2)}`;
-    } catch (e) { onError(e, { machine: machine.machine }); return `🟡 ${machine.machine}: my status sensor hit a snag. Try again in a moment, Ozzy.`; }
-  }))).join('\n\n');
+    if (!machine.online) return `${machine.machine} ⚫ offline — my sensors are waiting.`;
+    try { return machineLine(machine.machine, await hub.request(machine.machine, 'status')); }
+    catch (e) { onError(e, { machine: machine.machine }); return `${machine.machine} 🟡 my status sensor hit a snag. Try again in a moment, Ozzy.`; }
+  }))).join('\n');
 }
 export function createDiscord({ runner, hub, budget, env = process.env, auditFile = path.join(ROOT, 'data/audit.log'), client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.DirectMessages], partials: [Partials.Channel] }) }) {
   const owner = env.OWNER_DISCORD_ID, bitChannel = env.BIT_CHANNEL_ID;
@@ -84,8 +91,31 @@ export function createDiscord({ runner, hub, budget, env = process.env, auditFil
       fs.appendFileSync(auditFile, JSON.stringify({ time: new Date().toISOString(), event: 'discord_error', ...context, error: inspect(error, { depth: null }), stack: error?.stack || String(error) }) + '\n', { mode: 0o600 });
     } catch (auditError) { console.error('Could not write Discord error audit:', auditError); }
   };
-  client.on('error', fail);
+  let rejectFailure, fatalSeen = false;
+  const failure = new Promise((_, reject) => { rejectFailure = reject; });
+  // May reject during login before the entry point starts awaiting failure.
+  void failure.catch(() => {});
+  const fatal = (error, stage = 'gateway') => {
+    if (fatalSeen) return; fatalSeen = true;
+    const reason = error instanceof Error ? error : new Error(String(error));
+    const hint = reason.code === 4014 || /disallowed.*intent/i.test(reason.message)
+      ? ' Enable Message Content Intent in the Discord Developer Portal, or remove disallowed intents.' : '';
+    console.error(`Discord ${stage} failed: ${reason.message}.${hint} Brain will exit with status 1.`);
+    fail(reason, { stage }); rejectFailure(reason);
+  };
+  client.once(Events.ClientReady, ready => console.log(`Discord connected as ${ready.user.tag}`));
+  client.on(Events.Error, error => fatal(error));
+  client.on(Events.ShardError, error => fatal(error));
+  client.on(Events.Invalidated, () => fatal(new Error('Discord session invalidated')));
+  client.on(Events.ShardDisconnect, event => {
+    if ([4004, 4010, 4011, 4012, 4013, 4014].includes(event.code)) {
+      const error = new Error(event.code === 4014 ? 'Disallowed gateway intents (4014)' : `Gateway closed (${event.code}): ${event.reason || 'authentication/configuration error'}`);
+      error.code = event.code; fatal(error);
+    }
+  });
   client.on('messageCreate', async message => {
+    const filters = { owner: message.author.id === owner, location: allowedLocation(message.channel, bitChannel), human: !message.author.bot };
+    console.debug(`Discord message: author=${message.author.id} channel=${message.channel.id} owner=${filters.owner} location=${filters.location} human=${filters.human} accepted=${filters.owner && filters.location && filters.human}`);
     if (!acceptsMessage(message, owner, bitChannel)) return;
     let channel = message.channel;
     try {
@@ -99,7 +129,7 @@ export function createDiscord({ runner, hub, budget, env = process.env, auditFil
   client.on('interactionCreate', async interaction => {
     const ownerPassed = interaction.user.id === owner;
     const context = { command: interaction.commandName || interaction.customId || `type:${interaction.type}`, userId: interaction.user.id, ownerPassed };
-    console.log(`Discord interaction: command=${context.command} user=${context.userId} owner=${ownerPassed}`);
+    console.debug(`Discord interaction: command=${context.command} author=${context.userId} channel=${interaction.channelId} owner=${ownerPassed} location=${allowedLocation(interaction.channel, bitChannel)} slash=${interaction.isChatInputCommand()}`);
     if (!ownerPassed) return;
     try {
       if (interaction.isChatInputCommand()) {
@@ -141,7 +171,10 @@ export function createDiscord({ runner, hub, budget, env = process.env, auditFil
       } catch (replyError) { fail(replyError, { ...context, stage: 'error_reply' }); }
     }
   });
-  return { client, approvals, async start() { await client.login(env.DISCORD_TOKEN); }, close() { approvals.close(); client.destroy(); } };
+  return { client, approvals, failure, async start() {
+    try { await Promise.race([client.login(env.DISCORD_TOKEN), failure]); }
+    catch (error) { fatal(error, 'login'); throw error; }
+  }, close() { approvals.close(); client.destroy(); } };
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href && process.argv.includes('--register')) {
   required(process.env, ['DISCORD_TOKEN', 'DISCORD_APP_ID', 'DISCORD_GUILD_ID']);
