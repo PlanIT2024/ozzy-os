@@ -1,0 +1,19 @@
+[Unit]
+Description=bIT OZZY OS status node
+After=bit-brain.service
+Wants=bit-brain.service
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=%h/ozzy-os
+EnvironmentFile=%h/ozzy-os/.env
+ExecStart=/usr/bin/node %h/ozzy-os/src/node/index.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+UMask=0077
+
+[Install]
+WantedBy=default.target

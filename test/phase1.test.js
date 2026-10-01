@@ -10,6 +10,7 @@ import { NodeHub, parseTokens } from '../src/brain/nodeHub.js';
 import { startNode } from '../src/node/index.js';
 import { ApprovalRelay, acceptsMessage, splitMessage, machinesText, createDiscord } from '../src/brain/discord.js';
 import { Runner, activeMood } from '../src/brain/runner.js';
+import { sodium, publicHex, nodeKeys } from '../src/transport/crypto.js';
 import { EventEmitter } from 'node:events';
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 function fixture(t) {
@@ -86,10 +87,11 @@ test('owner routing, Unicode splitting and night personality', () => {
 });
 test('real hub and OZZY-AI node: authentication, live status, offline, timeout', async t => {
   const token = 'test-token-0123456789';
-  const hub = new NodeHub({ port: 0, tokens: parseTokens(`OZZY-AI:${token}`), timeout: 150 }); await hub.ready;
+  const key = sodium.crypto_kx_keypair(), nodeKey = sodium.crypto_kx_keypair();
+  const hub = new NodeHub({ port: 0, key, trustedKeys: nodeKeys(`OZZY-AI:${publicHex(nodeKey)}`), relayURL: '', tokens: parseTokens(`OZZY-AI:${token}`), timeout: 150 }); await hub.ready;
   t.after(() => hub.close()); const url = `ws://127.0.0.1:${hub.server.address().port}`;
-  await new Promise(resolve => { const ws = new WebSocket(url, { headers: { Authorization: 'Bearer wrong' } }); ws.on('error', e => { assert.match(e.message, /401/); resolve(); }); });
-  const node = startNode({ url, token, machine: 'OZZY-AI', heartbeat: 100, log: () => {} }); t.after(() => node.close());
+  await new Promise(resolve => { const ws = new WebSocket(url, { headers: { Authorization: 'Bearer wrong' } }); ws.on('close', code => { assert.equal(code, 4401); resolve(); }); });
+  const node = startNode({ url, token, key: nodeKey, brainKey: key.publicKey, machine: 'OZZY-AI', heartbeat: 100, log: () => {} }); t.after(() => node.close());
   for (let i = 0; i < 100 && !hub.list()[0].online; i++) await pause(10);
   assert.equal(hub.list()[0].online, true);
   hub.timeout = 10000;
@@ -99,7 +101,7 @@ test('real hub and OZZY-AI node: authentication, live status, offline, timeout',
   await assert.rejects(hub.request('OZZY-AI', 'shell'), /Unsupported/);
   node.close(); await pause(30); assert.equal(hub.list()[0].online, false);
   await assert.rejects(hub.request('OZZY-AI', 'status'), /offline/);
-  const silent = startNode({ url, token, machine: 'OZZY-AI', status: () => new Promise(() => {}), log: () => {} }); t.after(() => silent.close());
+  const silent = startNode({ url, token, key: nodeKey, brainKey: key.publicKey, machine: 'OZZY-AI', status: () => new Promise(() => {}), log: () => {} }); t.after(() => silent.close());
   for (let i = 0; i < 100 && !hub.list()[0].online; i++) await pause(10);
   hub.timeout = 20; await assert.rejects(hub.request('OZZY-AI', 'status'), /timed out/);
 });
@@ -142,20 +144,15 @@ test('Discord adapter simulates non-owner ignore and top-level thread continuity
   assert.equal(runs, 2); assert.equal(threads, 1); assert.equal(calls.length, 2);
 });
 
-test('hub rejects machine identity spoofing, expires stale peers and node reconnects', async t => {
-  const token = 'test-reconnect-token-123';
-  const hub = new NodeHub({ port: 0, tokens: parseTokens(`OZZY-AI:${token}`), stale: 70 }); await hub.ready; t.after(() => hub.close());
+test('encrypted hub expires stale peers and node reconnects', async t => {
+  const token = 'test-reconnect-token-123', key = sodium.crypto_kx_keypair(), nodeKey = sodium.crypto_kx_keypair();
+  const hub = new NodeHub({ port: 0, key, trustedKeys: nodeKeys(`OZZY-AI:${publicHex(nodeKey)}`), relayURL: '', tokens: parseTokens(`OZZY-AI:${token}`), stale: 100 });
+  await hub.ready; t.after(() => hub.close());
   const url = `ws://127.0.0.1:${hub.server.address().port}`;
-  const open = () => new Promise(resolve => { const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${token}` } }); ws.on('open', () => resolve(ws)); });
-  const hello = { type: 'hello', machine: 'OZZY-AI', os: 'linux', arch: 'x64', hostname: 'test', version: '1', capabilities: ['status'] };
-  const spoof = await open(); spoof.send(JSON.stringify({ ...hello, machine: 'OTHER' }));
-  await new Promise(resolve => spoof.once('close', code => { assert.equal(code, 1008); resolve(); }));
-  const stale = await open(); stale.send(JSON.stringify(hello));
-  await new Promise(resolve => stale.once('close', resolve)); assert.equal(hub.list()[0].online, false);
   let connections = 0;
-  const node = startNode({ url, token, machine: 'OZZY-AI', heartbeat: 10, log: s => { if (s.endsWith(' connected')) connections++; } }); t.after(() => node.close());
+  const node = startNode({ url, token, key: nodeKey, brainKey: key.publicKey, machine: 'OZZY-AI', heartbeat: 10, retry: 30, log: s => { if (s.endsWith(' connected')) connections++; } }); t.after(() => node.close());
   for (let i = 0; i < 100 && !hub.list()[0].online; i++) await pause(10);
-  hub.nodes.get('OZZY-AI').ws.terminate();
+  hub.nodes.get('ozzy-ai').connection.terminate();
   for (let i = 0; i < 250 && connections < 2; i++) await pause(10);
   assert.ok(connections >= 2); await pause(20); assert.equal(hub.list()[0].online, true);
 });

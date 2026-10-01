@@ -1,12 +1,18 @@
 {
   "name": "ozzy-os",
   "version": "1.0.0",
-  "description": "OZZY OS — bIT personal assistant, Phase 1",
+  "description": "OZZY OS — bIT always-on brain, encrypted status nodes and blind relay",
   "scripts": {
     "brain": "node src/brain/index.js",
     "node": "node src/node/index.js",
     "register-commands": "node src/brain/discord.js --register",
-    "test": "node --test"
+    "test": "node --test",
+    "relay": "node relay/index.js",
+    "keygen": "node scripts/keygen.js",
+    "service:install": "node scripts/services.js install",
+    "service:status": "node scripts/services.js status",
+    "service:logs": "node scripts/services.js logs",
+    "service:uninstall": "node scripts/services.js uninstall"
   },
   "keywords": [],
   "author": "",
@@ -15,6 +21,7 @@
     "@anthropic-ai/claude-agent-sdk": "0.3.284",
     "discord.js": "14.27.0",
     "dotenv": "18.0.4",
+    "libsodium-wrappers": "0.8.4",
     "systeminformation": "5.33.14",
     "ws": "8.22.0",
     "yaml": "2.9.1",

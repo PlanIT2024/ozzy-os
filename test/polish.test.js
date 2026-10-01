@@ -10,6 +10,7 @@ import { skillOptions } from '../src/brain/runner.js';
 import { createPermissions } from '../src/brain/permissions.js';
 import { createDiscord, machineLine, machinesText } from '../src/brain/discord.js';
 import { usableDisks, startNode } from '../src/node/index.js';
+import { sodium, SecurePeer } from '../src/transport/crypto.js';
 import { runBrain } from '../src/brain/index.js';
 
 function fixture(t) {
@@ -97,11 +98,12 @@ test('disk filter removes pseudo/system mounts and keeps Linux, macOS and Window
 test('node logs connected/disconnected only on changes, failed retries stay quiet', t => {
   t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
   const sockets = [], logs = [];
+  const key = sodium.crypto_kx_keypair(), brain = sodium.crypto_kx_keypair();
   class Socket extends EventEmitter {
-    constructor() { super(); sockets.push(this); this.readyState = 1; }
-    send() {} ping() {} terminate() { this.emit('close'); }
+    constructor() { super(); sockets.push(this); this.readyState = 1; this.peer = new SecurePeer({role: 'brain', name:'OZZY-AI', key:brain, peerKey:key.publicKey, send: frame => this.emit('message', frame, true)}); }
+    send(frame) { this.peer.receive(frame); } ping() {} terminate() { this.emit('close'); }
   }
-  const node = startNode({ machine: 'OZZY-AI', token: 'test', Socket, log: line => logs.push(line) });
+  const node = startNode({ machine: 'OZZY-AI', key, brainKey: brain.publicKey, token: 'test', Socket, log: line => logs.push(line) });
   sockets[0].emit('error', new Error('offline')); sockets[0].emit('close');
   t.mock.timers.tick(1600); assert.equal(sockets.length, 2); assert.deepEqual(logs, []);
   sockets[1].emit('open'); t.mock.timers.tick(30000); assert.deepEqual(logs, ['bit-node OZZY-AI connected']);

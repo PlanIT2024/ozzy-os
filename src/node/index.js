@@ -1,8 +1,13 @@
 import os from 'node:os';
+import path from 'node:path';
+import { EventEmitter } from 'node:events';
+import { loadKey, decodePublic, SecurePeer } from '../transport/crypto.js';
+import { RelayClient } from '../transport/relayClient.js';
+import { canonical, MAX_MESSAGE } from '../../relay/wire.js';
 import { pathToFileURL } from 'node:url';
 import { WebSocket } from 'ws';
 import si from 'systeminformation';
-import { required } from '../shared.js';
+import { ROOT, required } from '../shared.js';
 export function usableDisks(disks) {
   const pseudo = /^(?:efivarfs|tmpfs|devtmpfs|squashfs|proc|sysfs|devpts|cgroup2?|securityfs|debugfs|tracefs|pstore|mqueue|hugetlbfs|configfs|fusectl|ramfs|autofs|nsfs|binfmt_misc)$/i;
   return disks.filter(d => {
@@ -17,41 +22,60 @@ export async function machineStatus() {
   const [cpu, memory, disks, battery, users, version] = await Promise.all([si.currentLoad(), si.mem(), si.fsSize(), si.battery(), si.users(), si.osInfo()]);
   return { uptime: os.uptime(), cpu: { loadPercent: cpu.currentLoad, cores: os.cpus().length }, memory: { total: memory.total, used: memory.active, available: memory.available }, disks: usableDisks(disks).map(d => ({ mount: d.mount, size: d.size, used: d.used, usePercent: d.use })), battery: battery.hasBattery ? { percent: battery.percent, charging: battery.isCharging, remainingMinutes: battery.timeRemaining } : null, users: [...new Set(users.map(u => u.user))], processUser: os.userInfo().username, os: { platform: version.platform, distro: version.distro, release: version.release, kernel: version.kernel } };
 }
-export function startNode({ url = process.env.BRAIN_URL || 'ws://127.0.0.1:8787', token = process.env.NODE_TOKEN, machine = process.env.MACHINE_NAME, heartbeat = 30000, status = machineStatus, log = console.log, Socket = WebSocket } = {}) {
-  required({ NODE_TOKEN: token, MACHINE_NAME: machine }, ['NODE_TOKEN', 'MACHINE_NAME']);
-  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(machine)) throw new Error('Invalid MACHINE_NAME');
-  let ws, timer, pulse, stopped = false, attempt = 0, busy = false, lastPong = Date.now();
-  let connected = false;
-  function transition(next) {
-    if (connected === next) return;
-    connected = next; log(`bit-node ${machine} ${next ? 'connected' : 'disconnected'}`);
-  }
-  function connect() {
-    ws = new Socket(url, { headers: { Authorization: `Bearer ${token}` }, maxPayload: 256 * 1024, handshakeTimeout: 10000 });
-    ws.on('open', () => {
-      attempt = 0; lastPong = Date.now(); transition(true);
-      ws.send(JSON.stringify({ type: 'hello', machine, os: os.platform(), arch: os.arch(), hostname: os.hostname(), version: '1.0.0', capabilities: ['status'] }));
-      pulse = setInterval(() => {
-        if (Date.now() - lastPong > 90000) { ws.terminate(); return; }
-        if (ws.readyState === WebSocket.OPEN) { ws.ping(); ws.send(JSON.stringify({ type: 'heartbeat' })); }
-      }, heartbeat);
+export function startNode({ transport = process.env.NODE_TRANSPORT || 'local', url = transport === 'relay' ? process.env.RELAY_URL : process.env.BRAIN_URL || 'ws://127.0.0.1:8787', token = transport === 'relay' ? process.env.NODE_RELAY_TOKEN || process.env.RELAY_TOKEN : process.env.NODE_TOKEN, machine = process.env.MACHINE_NAME, key = loadKey(process.env.NODE_KEY_FILE || path.join(ROOT, 'data/keys/node.json')), brainKey = decodePublic(process.env.BRAIN_PUBLIC_KEY), heartbeat = 30000, status = machineStatus, log = console.log, Socket = WebSocket, retry = 1000 } = {}) {
+  required({ TOKEN: token, MACHINE_NAME: machine }, ['TOKEN', 'MACHINE_NAME']);
+  if (!['local', 'relay'].includes(transport) || canonical(machine) === 'brain') throw new Error('Invalid transport or machine name');
+  if (transport === 'local' && !['127.0.0.1', 'localhost', '[::1]'].includes(new URL(url).hostname)) throw new Error('Local transport must use loopback');
+  const events = new EventEmitter();
+  let ws, relay, peer, reconnect, pulse, handshakeTimer, stopped = false, connected = false, attempt = 0, busy = false;
+  function transition(next) { if (connected !== next) { connected = next; log(`bit-node ${machine} ${next ? 'connected' : 'disconnected'}`); } }
+  function clearPeer() { clearTimeout(handshakeTimer); clearInterval(pulse); peer?.close(); peer = null; transition(false); }
+  function fatal(reason) { if (stopped) return; log(`bit-node ${machine} rejected: ${reason}. Check token, NODE_KEYS, BRAIN_PUBLIC_KEY and machine name; restart after fixing.`); stop(); events.emit('fatal', new Error(reason)); }
+  function begin(send) {
+    clearPeer(); const current = peer = new SecurePeer({ role: 'node', name: machine, key, peerKey: brainKey, send });
+    handshakeTimer = setTimeout(() => fatal('E2E handshake timed out (untrusted key/name or unreachable brain)'), 10000);
+    current.on('ready', () => {
+      clearTimeout(handshakeTimer); transition(true); attempt = 0;
+      current.send({ type: 'hello', machine, os: os.platform(), arch: os.arch(), hostname: os.hostname(), version: '2.0.0', capabilities: ['status'] });
+      pulse = setInterval(() => { try { current.send({ type: 'heartbeat' }); } catch { clearPeer(); } }, heartbeat);
     });
-    ws.on('pong', () => { lastPong = Date.now(); });
-    ws.on('message', async data => {
-      const peer = ws; let m;
-      try { m = JSON.parse(data.toString()); } catch { peer.close(1008, 'Invalid JSON'); return; }
+    current.on('message', async m => {
       if (m.type !== 'req' || typeof m.id !== 'string' || m.id.length > 128) return;
-      const send = value => { if (peer.readyState === WebSocket.OPEN) peer.send(JSON.stringify({ type: 'res', id: m.id, ...value })); };
-      if (m.method !== 'status') return send({ ok: false, error: 'Unsupported method' });
-      if (busy) return send({ ok: false, error: 'Status collection busy' });
-      busy = true;
-      try { send({ ok: true, result: await status() }); } catch { send({ ok: false, error: 'Status collection failed' }); } finally { busy = false; }
+      const sendResult = value => { if (current === peer && current.state === 'open') current.send({ type: 'res', id: m.id, ...value }); };
+      if (m.method !== 'status') return sendResult({ ok: false, error: 'Unsupported method' });
+      if (busy) return sendResult({ ok: false, error: 'Status collection busy' });
+      busy = true; try { sendResult({ ok: true, result: await status() }); } catch { sendResult({ ok: false, error: 'Status collection failed' }); } finally { busy = false; }
     });
-    ws.on('error', () => { /* close drives state transitions; failed retries stay quiet */ });
-    ws.on('close', () => { transition(false); clearInterval(pulse); if (!stopped) timer = setTimeout(connect, Math.min(30000, 1000 * 2 ** Math.min(attempt++, 5)) + Math.random() * 500); });
+    current.start();
   }
-  connect(); return { close() { stopped = true; clearTimeout(timer); clearInterval(pulse); ws?.terminate(); } };
+  function receive(frame) { try { if (!peer) throw new Error('No E2E handshake'); peer.receive(frame); } catch (error) { fatal(error.message); } }
+  function connectLocal() {
+    ws = new Socket(url, { headers: { Authorization: `Bearer ${token}` }, maxPayload: MAX_MESSAGE, handshakeTimeout: 10000, perMessageDeflate: false });
+    let lastPong = Date.now();
+    const ping = setInterval(() => { if (Date.now() - lastPong > 90000) ws.terminate(); else if (ws.readyState === WebSocket.OPEN) ws.ping(); }, 30000);
+    ws.on('open', () => begin(frame => ws.send(frame)));
+    ws.on('pong', () => { lastPong = Date.now(); });
+    ws.on('message', (data, binary) => { if (!binary) fatal('Brain sent unencrypted data'); else receive(data); });
+    ws.on('error', () => {});
+    ws.on('close', (code, reason) => {
+      clearInterval(ping); clearPeer();
+      if ([4400, 4401, 4403, 4408, 1009].includes(code)) { fatal(`${code} ${reason}`); return; }
+      if (!stopped) reconnect = setTimeout(connectLocal, Math.min(30000, retry * 2 ** Math.min(attempt++, 5)) + Math.random() * 250);
+    });
+  }
+  function stop() { stopped = true; clearTimeout(reconnect); clearPeer(); relay?.close(); ws?.terminate(); }
+  if (transport === 'relay') {
+    relay = new RelayClient({ url, token, name: machine, log, retry });
+    relay.on('frame', receive);
+    relay.on('control', m => {
+      if (m.type === 'peer' && m.name === 'brain') { if (m.online) begin(frame => relay.send(frame)); else clearPeer(); }
+      if (m.type === 'rejected') fatal(m.reason === 'unknown_key' ? 'Unknown node key/name in brain NODE_KEYS' : 'E2E authentication failed: wrong key/name or rejected ciphertext');
+    });
+    relay.on('offline', clearPeer); relay.on('fatal', error => fatal(error.message));
+  } else connectLocal();
+  return Object.assign(events, { close: stop });
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const node = startNode(); for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => node.close());
+  const node = startNode(); node.on('fatal', () => { process.exitCode = 1; });
+  for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => node.close());
 }

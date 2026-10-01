@@ -1,116 +1,142 @@
-# OZZY OS · bIT (Phase 1)
+# OZZY OS · bIT — Phase 2
 
-Standalone personal assistant for Ozzy: Claude Agent SDK brain, owner-only Discord conversations, and authenticated status-only nodes. Nothing imports or accesses PlanIT.
+OZZY-AI is the permanent brain. Discord remains owner-only; nodes expose **status only**. A remote node and the brain each connect outbound to a blind relay. OZZY-AI listens only on loopback; no public listener, inbound firewall exception, or port forwarding is needed. This repository is independent of PlanIT.
 
-## Setup on OZZY-AI
+## Install/upgrade on OZZY-AI
 
-Use Node.js 22 LTS or newer supported LTS and npm. This checkout was tested with Node 22.23.1. Install dependencies and configure a local environment file:
+Use Node.js LTS (22 or newer) and Git. This release was tested on Node 22.23.1. Keep the checkout at `~/ozzy-os` for the user service units.
 
 ```sh
 cd ~/ozzy-os
 npm ci
+# For a fresh install only:
 cp .env.example .env
 chmod 600 .env
-node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
+npm run --silent keygen -- --role brain
+npm run --silent keygen -- --role node
 ```
 
-Put the generated token in `NODE_TOKEN` and `NODE_TOKENS=OZZY-AI:<same-token>`. Set `MACHINE_NAME=OZZY-AI`. Fill in `ANTHROPIC_API_KEY`, `DISCORD_TOKEN`, `DISCORD_APP_ID`, `DISCORD_GUILD_ID`, `BIT_CHANNEL_ID`, and `OWNER_DISCORD_ID`. Do not commit `.env`. `BIT_MODEL` defaults to the requested `claude-sonnet-5`; the account must have access to that model, or set an accessible Claude model explicitly. `TZ` defaults to America/New_York in the personality and budget logic.
+**Do not overwrite an existing `.env`.** Each keygen invocation prints only the public key; it preserves an existing keypair. Brain/node keys are separate roles on OZZY-AI, stored under `data/keys/brain.json` and `node.json`. Files are created with mode 0600 and their directory with 0700. `data/` is gitignored. On Windows, also keep the checkout in the user's private profile with restrictive NTFS ACLs; POSIX modes do not enforce Windows ACLs.
 
-Create a Discord application and bot in the Developer Portal. Enable **Message Content Intent**. Invite it to your server with `bot` and `applications.commands` scopes and these channel permissions: View Channel, Send Messages, Send Messages in Threads, Create Public Threads, Read Message History, Attach Files. The bot needs Attach Files to show complete approval proposals. Ensure #bit permits these permissions. Enable server-member DMs if you want to DM the bot.
+Fill the existing Discord/API configuration (`ANTHROPIC_API_KEY`, `DISCORD_TOKEN`, `DISCORD_APP_ID`, `DISCORD_GUILD_ID`, `BIT_CHANNEL_ID`, `OWNER_DISCORD_ID`). The model defaults to `claude-sonnet-5`; change `BIT_MODEL` if your account uses another available model. Enable Message Content Intent for the Discord bot and grant View Channel, Send Messages, Send Messages in Threads, Create Public Threads, Read Message History and Attach Files. Register the guild slash commands once with `npm run register-commands`.
+
+Pair the local node in `.env`:
+
+```dotenv
+MACHINE_NAME=OZZY-AI
+NODE_TRANSPORT=local
+BRAIN_URL=ws://127.0.0.1:8787
+NODE_HUB_BIND=127.0.0.1
+NODE_HUB_PORT=8787
+NODE_TOKEN=<random-local-token>
+NODE_TOKENS=OZZY-AI:<same-random-local-token>
+BRAIN_PUBLIC_KEY=<brain-public-key>
+NODE_KEYS=OZZY-AI:<node-public-key>
+AUTO_PUSH=false
+```
+
+Generate the local random token with `node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"`. Keys are 64 hex characters. Tokens and keys serve different purposes: local/relay tokens gate transport access; only E2E keys authenticate application traffic. `NODE_KEYS` may contain comma-separated `name:publickey` entries. Names match case-insensitively but display as sent by the authenticated machine. The reserved name `brain` cannot be a node.
+
+## Always-on Linux services
+
+The following **manual sudo step is required once** for reboot/logout operation:
 
 ```sh
-npm run register-commands
-npm run brain
+sudo loginctl enable-linger "$USER"
+loginctl show-user "$USER" -p Linger
 ```
 
-In a second terminal:
+It must report `Linger=yes`. Linger was already enabled on OZZY-AI during verification. Then:
 
 ```sh
-cd ~/ozzy-os
-npm run node
+npm run service:install
+npm run service:status
+npm run service:logs
 ```
 
-The node reports status; it receives no Discord or Claude credentials over the protocol. The brain binds to `127.0.0.1:8787` by default. Both processes stop on Ctrl+C. Run one brain per checkout: `data/brain.lock` prevents concurrent cost/session writers. After a hard crash, the next start reclaims the lock if its recorded PID is no longer running. Live, inaccessible or invalid PIDs remain protected. SIGINT/SIGTERM clean up the lock after shutdown.
-
-## Discord behavior
-
-Only `OWNER_DISCORD_ID` is handled, in #bit, its threads, or DMs. Other senders are ignored without replies. Every owner top-level text message in #bit starts a thread. Replies resume that thread's SDK session; DMs use a session per DM channel. Attachment-only messages are ignored in Phase 1.
-
-- `/machines`: one human-readable line per machine, for example `OZZY-AI 🟢 up 3d · CPU 8% · RAM 6/50 GB · disk 6%`. Disk usage is for the root/system volume, falling back to the first usable volume. Model tools still receive structured status for every usable disk.
-- `/mood personality:hype`: saves the default voice. Choices: chill, hype, chaotic, gremlin, sage. Sage overrides it from 22:00 through 04:59 in `TZ`.
-- `/budget`: this month's estimated spend and cap.
-- `/reset`: clears the current thread/DM session mapping, preserving long-term memory.
-
-Registration is guild-scoped as requested, so slash commands are available in the configured server, not DMs. Ordinary owner DM conversations work. Replies split at Discord's 2,000 UTF-16-unit limit; mentions are disabled.
-
-## Memory, skills and permissions
-
-`bit/memory/profile.md` starts with `Owner: Ozzy`. Fill it in as desired. bIT reads memory for personal questions and can Write/Edit memory. Successful writes emit `📝 noted: <file>`. Persona files are readable but never writable by bIT. Source, `.env`, runtime data and all other paths are denied for both reads and writes.
-
-Only Read, Write, Edit, Glob, Grep and Skill are exposed as built-ins. An in-process MCP server exposes `list_machines` and `machine_status`. Bash, web search and all other tools are excluded. The same policy runs in `canUseTool` and in a mandatory `PreToolUse` hook because SDK auto-approved reads can skip `canUseTool`. Tool decisions and completion/failure events are logged as JSON lines in `data/audit.log`; file bodies and search strings are omitted. Read-only custom tools need no confirmation.
-
-Paths must be explicit and remain within permitted trees. Traversal, symlinks, hard-linked files and special files are rejected. Searches inspect descendant paths too, so a nested symlink cannot leak data. The one exception is the host-created `.claude/skills` discovery alias, verified to point to `bit/skills`. Permission callbacks are application-level checks, not an OS sandbox against other local processes changing files during execution. Do not let untrusted local programs mutate this checkout while bIT runs.
-
-Create skills as `bit/skills/<name>/SKILL.md`. The runner enables only `settingSources: ['project']` and creates `.claude/skills` as a symlink (junction on Windows) to that folder. It supplies an explicit skill allowlist matching the folder names, disables bundled skills and cloud-synced skills/plugins, and rejects other project `.claude` configuration (settings, hooks, plugins and legacy commands). Each skill's frontmatter name must match its folder. User settings and user skills are not loaded; SDK state is isolated in `data/claude`. Discord text is passed as ordinary conversation, so it cannot dispatch Claude Code built-in slash commands. The agent cannot alter settings. SDK subprocess environment excludes Discord and node tokens. `strictMcpConfig` limits MCP loading to the supplied machine server.
-
-Only the owner pressing the Discord ✅ button can authorize a skill change. Chat text such as “approved” or “sounds good” never authorizes a pending write. Every skill write/edit shows the full proposal as an attached JSON file with owner-only ✅/❌ buttons. Denial, cancellation, or ten-minute expiry denies the operation. Paths are checked again after approval. Skills need YAML frontmatter with `name` and `description`; optional `argument-hint`, `disable-model-invocation` and `user-invocable` are accepted. Other metadata, shell preprocessing, hooks and subagent directives are rejected in Phase 1. bIT can create ordinary instruction skills after approval; executing scripts remains out of scope. Keep project settings and manually installed skills under your control.
-
-## Budget and persistence
-
-`data/` and `.env` are gitignored. The brain atomically stores session mappings, preferences and monthly cost totals. SDK transcripts stay in `data/claude`. Back up `data/` and `bit/memory/`; both contain personal information. Memory is tracked in this initial repo, so review it before publishing commits.
-
-Runs are serialized across conversations to prevent concurrent requests racing past the cap. SDK `total_cost_usd` is cumulative on resumed sessions in the pinned SDK; the ledger charges only the increase. Month boundaries use `TZ`. Each query gets `maxBudgetUsd` equal to the remaining balance. The cap blocks new API calls once reached; one in-flight API response can exceed it because cost is reported after generation. It is an estimated local spend gate, not a provider billing limit; unrelated API use is not included.
-
-Before each query, the ledger marks usage uncertain. A final SDK result clears it. After a crash or a run without a cost result, new calls fail closed. Reconcile the relevant session's cumulative total and month's spend against available SDK/provider usage, then set `uncertain` to `false` in `data/budget.json` while the brain is stopped. Do not just clear it without accounting for the missing spend. A failed startup before any API use can be reconciled as zero. `/machines`, `/mood`, `/budget` and `/reset` do not spend API budget.
-
-## Add another machine
-
-Install this repository and Node LTS on Linux, macOS or Windows, then run `npm ci`. On the brain, add a unique token mapping, such as `NODE_TOKENS=OZZY-AI:<token1>,MACBOOK:<token2>`, then restart. Tokens must have at least 16 characters; use independently generated 32-byte random values.
-
-On the new machine configure only `BRAIN_URL`, `NODE_TOKEN`, and `MACHINE_NAME` in its `.env`, and run `npm run node`. Use a reachable private address for `BRAIN_URL` and set `NODE_HUB_BIND` to the brain's private/Tailscale address. Default localhost binding deliberately does not accept remote nodes. Plain `ws://` bearer traffic should stay on localhost or an encrypted private network; use `wss://` behind TLS otherwise.
-
-The stable protocol uses authenticated WebSockets, an identity-bound `hello`, 30-second heartbeats, 90-second offline detection, and `{type:'req', id, method, params}` / `{type:'res', id, ok, result|error}` messages. Requests time out after 10 seconds. Duplicate authenticated connections replace the old socket without marking the new one offline. Nodes reconnect with exponential backoff and jitter and detect dead connections using ping/pong. Only `status` is implemented. To add capabilities later, extend method dispatch and authorization while retaining the envelope; no screen, input, camera or shell placeholder exists.
-
-Status includes uptime seconds, CPU load percent/core count, memory bytes, filesystem bytes/usage, battery if present, logged-in users, node process user, and OS version. Pseudo/system mounts such as efivars, `/boot/efi`, tmpfs and snap loop devices are excluded. Some machines have no interactive login or battery; those fields can be empty/null. Node connection logs appear only when the connection state changes; failed retries do not repeat connection messages.
-
-## Optional user systemd service
-
-Save as `~/.config/systemd/user/bit-brain.service`, adjusting the home and Node executable paths (`command -v node`; nvm installations usually need an absolute version-specific path):
-
-```ini
-[Unit]
-Description=bIT OZZY OS brain
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-WorkingDirectory=/home/ozzy/ozzy-os
-ExecStart=/usr/bin/node /home/ozzy/ozzy-os/src/brain/index.js
-Restart=on-failure
-RestartSec=5
-UMask=0077
-
-[Install]
-WantedBy=default.target
-```
-
-The application reads `.env` itself. Then:
+Installation copies `deploy/systemd/bit-{brain,node}.service` into the user unit directory, substitutes the current absolute Node executable, reloads systemd, and enables/starts both units. Both use `WorkingDirectory=%h/ozzy-os`, `EnvironmentFile=%h/ozzy-os/.env`, `Restart=on-failure`, `RestartSec=5`, a limit of five starts per 120 seconds, and `UMask=0077`. The local node Wants/After the brain. They run independently of terminals. Updating unit files requires rerunning install; after changing code or `.env`, run:
 
 ```sh
-systemctl --user daemon-reload
-systemctl --user enable --now bit-brain
-journalctl --user -u bit-brain -f
+systemctl --user restart bit-brain bit-node
 ```
 
-Optional `loginctl enable-linger "$USER"` keeps user services running after logout. No service is installed automatically.
+`npm run service:uninstall` stops/disables/removes the user units without deleting `.env`, keys, data, or memory. For a node-only Linux machine, use `npm run service:install -- --node-only` (and the same flag with status/logs/uninstall); its unit has no brain dependency.
 
-## Runtime logs
+Only one brain may own `data/brain.lock`. A confirmed dead PID is reclaimed; live, inaccessible or malformed PIDs are protected. SIGINT/SIGTERM clean up the lock. A crash including SIGKILL is recovered by the next start. To deliberately test recovery:
 
-The brain logs `Discord connected as <tag>` on ready and one debug line per incoming message/interaction with author, channel and filter results. Command failures receive an in-character response and full console/audit diagnostics. Login and fatal gateway errors stop the brain with a non-zero exit status after cleanup; disallowed intents include a Developer Portal hint. Temporary gateway disconnects retain Discord’s normal reconnect behavior.
+```sh
+systemctl --user kill --signal=KILL --kill-whom=main bit-brain.service
+# Wait at least five seconds, then:
+systemctl --user show bit-brain -p MainPID -p NRestarts
+```
 
-## Validation
+If a configuration problem exhausts the start limit, fix it then `systemctl --user reset-failed bit-brain bit-node` and restart. Authentication rejections print a clear reason and stop the node process; systemd's bounded restart policy may retry it. No silent endless authentication retry occurs inside the node.
 
-Run `npm test`. Tests use temporary directories, a real local WebSocket hub and systeminformation node, and mocked Discord/SDK boundaries without API spend. See [PROOF.md](PROOF.md) for results and the live acceptance checklist.
+## Relay and adding a machine
 
-Implementation reference (official docs, checked before coding and cross-checked against installed `sdk.d.ts`): [query/types](https://code.claude.com/docs/en/agent-sdk/typescript), [sessions](https://code.claude.com/docs/en/agent-sdk/sessions), [custom tools](https://code.claude.com/docs/en/agent-sdk/custom-tools), [permissions](https://code.claude.com/docs/en/agent-sdk/permissions), [hooks](https://code.claude.com/docs/en/agent-sdk/hooks), [skills/settingSources](https://code.claude.com/docs/en/agent-sdk/skills).
+Prepare/deploy the standalone `relay/` service yourself using [relay/README.md](relay/README.md). Railway root directory is `/relay`; the Dockerfile and independent lockfile are included. **Nothing was deployed to Railway.** Only the Railway relay binds publicly. OZZY-AI rejects non-loopback hub bind addresses.
+
+For each remote machine:
+
+1. Clone this repo (the Phase 2 branch until it is merged), run `npm ci`, then `npm run --silent keygen -- --role node`.
+2. Transfer only that public key to OZZY-AI over a trusted channel. Add `MACHINE-NAME:<node-public-key>` to the brain's `NODE_KEYS`. Verify the brain public key on the node by the same trusted channel. Do not accept keys from the relay or automatically trust first connections.
+3. Generate a distinct relay token with `node relay/token.js`. Add its SHA-256 hash, client name and `role: "node"` to the relay's `RELAY_CLIENTS`; give the raw token only to the node. Configure the single `brain` relay client similarly.
+4. Create this **node-only** `.env` on the remote machine:
+
+```dotenv
+NODE_TRANSPORT=relay
+RELAY_URL=wss://<relay-domain>/
+RELAY_TOKEN=<this-node-token>
+BRAIN_PUBLIC_KEY=<verified-brain-public-key>
+MACHINE_NAME=MACBOOK
+```
+
+No Discord/API credentials or local `NODE_TOKEN` are needed there. Optional `NODE_KEY_FILE` selects a different private key file. Brain key override is `BRAIN_KEY_FILE`. The keygen equivalent override is `BIT_KEY_FILE`; otherwise the standard role paths are used.
+
+On OZZY-AI set `RELAY_URL=wss://<relay-domain>/` and `BRAIN_RELAY_TOKEN=<brain-relay-token>` while keeping `NODE_TRANSPORT=local` for its own local node. The brain runs the local listener and outbound relay connection together. A node-only machine uses `RELAY_TOKEN`; `NODE_RELAY_TOKEN` is an optional override if sharing an env with a relay-connected brain. Restart the relay after updating token hashes, restart the brain after updating `NODE_KEYS`, and start the new node with `npm run node` or its user service. `/machines` shows it online after the E2E handshake and hello.
+
+Rotate/revoke transport tokens on the relay and restart it. To revoke a node identity, remove its `NODE_KEYS` entry and restart the brain. Changing E2E keys requires re-pairing both public-key configurations. Do not share a private key between different machine names.
+
+## macOS and Windows node startup
+
+**macOS:** `npm run service:install` installs `~/Library/LaunchAgents/com.ozzy.bit-node.plist`, substituting absolute paths and enabling the node in the logged-in GUI session. The template is in `deploy/launchd/`. `.env` is loaded by the application. `service:status`, `service:logs` and `service:uninstall` support Darwin. LaunchAgent logs are `data/node.log` and `data/node-error.log`. This intentionally runs with your desktop login, not as a root daemon.
+
+**Windows:** create a Task Scheduler task named `bIT Node`:
+
+- Trigger: **At log on**, for your user; choose **Run only when user is logged on**.
+- Program: the absolute path to `node.exe` (find it with `where node`).
+- Arguments: `"C:\Users\<you>\ozzy-os\src\node\index.js"`.
+- Start in: `C:\Users\<you>\ozzy-os`.
+- Settings: restart on failure every minute, up to three attempts; do not start another instance; remove the automatic time limit. Disable “start only on AC power” if you want laptop status on battery.
+
+Run the task once and confirm `/machines`. To remove it, end/disable/delete the task. It is deliberately **not** a Windows service, preserving the interactive session for future screen/input work. macOS and Windows installation templates/instructions were not executed on this Linux host.
+
+## Encryption and transport
+
+Both transports use the identical libsodium protocol: `crypto_kx` X25519 key agreement gives separate brain→node and node→brain keys; XChaCha20-Poly1305 encrypts every handshake and application payload with a fresh random 24-byte nonce. Authenticated data binds protocol version, sender, recipient, message ID, session identifier and a per-direction 64-bit monotonic counter. Receivers reject counters no newer than the last authenticated one, wrong session/name/key, and failed authentication. Failed ciphertext never advances the accepted counter.
+
+An encrypted node nonce, encrypted fresh brain challenge, and encrypted finish proof establish a new random session before the node is registered online. Counter resets are confined to that session: captured traffic from before reconnect/restart cannot authenticate to the new challenge. Long-term static key agreement does not provide forward secrecy if an endpoint's private key is later stolen; protect and rotate key files. The relay has neither key and cannot impersonate a trusted node with only a relay token. It can still deny service and observe routing names, IDs, sizes and timing.
+
+Application envelopes remain `req`/`res` with ID, method and params/result, so future capabilities can extend dispatch without changing the relay. Only `status` is implemented; no screen/input/camera/shell placeholders are added. Requests time out at 10 seconds, status heartbeat is every 30 seconds, nodes expire after 90 seconds, and network failures reconnect with backoff. `ws://` is accepted only for loopback relay tests; remote connections require `wss://`.
+
+References: [libsodium key exchange](https://libsodium.gitbook.io/doc/key_exchange), [XChaCha20-Poly1305](https://libsodium.gitbook.io/doc/secret-key_cryptography/aead/chacha20-poly1305/xchacha20-poly1305_construction).
+
+## Discord, memory, skills and growth commits
+
+Only the owner is handled in #bit, its threads and DMs. Top-level #bit messages create separate threads/sessions; thread replies resume them. Guild slash commands are `/machines`, `/mood`, `/budget`, `/reset`. `/machines` shows one line per node, such as `OZZY-AI 🟢 up 3d · CPU 8% · RAM 6/50 GB · disk 6%`; offline nodes show last-seen time (or never). Last-seen registry timestamps are in-memory and reset on brain restart. The model's tools still receive structured status. Pseudo mounts, efivars, `/boot/efi`, tmpfs and snap loops are excluded.
+
+Personality defaults to chill, with saved chill/hype/chaotic/gremlin/sage choices and sage from 22:00–04:59 in `TZ`. Owner memory lives in `bit/memory`; successful writes post `📝 noted`. Persona is read-only. Source, `.env`, `data/keys`, home Claude configuration and other paths are denied to model tools. Only Read/Write/Edit/Glob/Grep/Skill and the two status tools are exposed. Permission callbacks and pre-tool hooks enforce the path policy. No Bash tool is available; host-controlled Git operations below are separate from the model's tool surface.
+
+Skills load only from `bit/skills` through the verified project discovery alias and explicit allowlist. Bundled/user/synced skills are disabled. Skills require matching folder/name and descriptive YAML metadata; no shell preprocessing, hooks or subagents. Every skill write/edit needs the owner's Discord ✅ button. Chat text cannot authorize it. The complete proposal is attached; ❌, cancellation and ten-minute expiry deny it.
+
+After each successful approved skill write, the host stages **only that skill folder**, commits `bIT: add skill <name>` or `bIT: update skill <name>`, and posts a one-line note in #bit. Multi-file skills may produce multiple commits as each approved write completes. Memory changes are collected at most once per hour into `bIT: memory notes <UTC-date>`, with the last batch time persisted across restarts. Existing/manual changes within an included folder join its next batch; review personal memory before enabling remote pushes.
+
+Growth commits use `git commit --only -- <allowed-folder>` so unrelated changes already staged in your index do not enter the commit. Only `bit/memory/**` and `bit/skills/<name>/**` are staged; symlinks and nested repositories are rejected. Configure local `git user.name` and `git user.email` if missing. Repository Git hooks are disabled for automatic commits. No automatic push occurs unless `AUTO_PUSH=true`; Git/push failures are logged to console and `data/audit.log` without crashing the brain. Auto-push requires a configured upstream and suitable Git credentials; push errors do not undo local commits.
+
+## Budget, diagnostics and validation
+
+Monthly cost comes from SDK result messages. Runs serialize; cumulative resumed-session costs are charged only once. `BIT_MONTHLY_CAP_USD` gates new calls and sets the SDK's remaining-run budget. An in-flight response can exceed the cap. Unknown spend after an interrupted API run fails closed; reconcile `data/budget.json` before clearing its `uncertain` flag. `TZ` defines month boundaries. Machine status and slash commands need no API spend.
+
+Discord logs its ready tag and incoming filter decisions. Login/fatal gateway errors log full diagnostics and exit nonzero; disallowed intents include a Developer Portal hint. Node authentication rejections explain which pairing/token settings to inspect. Relay logs never include payloads. `data/` contains personal transcripts, audit/budget/session state and keys; keep it private and backed up. `.env` and all runtime data are gitignored. Memory/skills themselves are tracked growth artifacts.
+
+Run `npm test` for the complete suite. [PHASE2-PROOF.md](PHASE2-PROOF.md) records tests, service/relay proofs, and remaining manual checks. [PROOF.md](PROOF.md) preserves Phase 1 history.

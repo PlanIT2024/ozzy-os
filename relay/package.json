@@ -1,0 +1,6 @@
+{
+  "name": "bit-hub", "version": "2.0.0", "private": true, "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": { "start": "node index.js", "token": "node token.js" },
+  "dependencies": { "ws": "8.22.0" }
+}

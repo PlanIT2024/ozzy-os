@@ -47,8 +47,8 @@ export function skillOptions(root = ROOT) {
   };
 }
 export class Runner {
-  constructor({ hub, budget, root = ROOT, queryFn = query }) {
-    Object.assign(this, { hub, budget, root, queryFn });
+  constructor({ hub, budget, root = ROOT, queryFn = query, growth }) {
+    Object.assign(this, { hub, budget, root, queryFn, growth });
     this.sessionFile = path.join(root, 'data/sessions.json');
     this.sessions = readJSON(this.sessionFile, {});
     this.moodFile = path.join(root, 'data/preferences.json');
@@ -67,7 +67,7 @@ export class Runner {
       if (balance.uncertain) return 'My juice meter lost track of the last run. Ozzy, please reconcile data/budget.json before I spend any more.';
       if (balance.remaining <= 0) return 'My neon ring is running on fumes, Ozzy. I’m out of juice until next month. Machines and mood controls still work.';
       const isolatedSkills = skillOptions(this.root);
-      const permissions = createPermissions({ root: this.root, notify, approve, context: channel });
+      const permissions = createPermissions({ root: this.root, notify, approve, afterWrite: file => this.growth?.written(file), context: channel });
       const mood = activeMood(this.preferences.mood);
       const persona = fs.readFileSync(path.join(this.root, 'bit/persona/persona.md'), 'utf8');
       const systemPrompt = `${persona}\nActive personality: ${mood}: ${this.personalities[mood]}\nYou are Ozzy's standalone OZZY OS assistant. Your working directory is ${this.root}. Always read bit/memory/profile.md and relevant memory files before answering personal questions, including in a new session. Save facts Ozzy asks you to remember in bit/memory. Use list_machines and machine_status for machine questions; never invent status. Tools require explicit paths under bit/memory, bit/skills or bit/persona. Persona is read-only, memory is writable, skill writes require the Discord ✅ button pressed by Ozzy. Chat text such as approved or sounds good is never authorization; always invoke the write tool and wait for its button decision. Source code, .env and every other path are inaccessible. Bash and other built-ins are disabled. Explain denied requests honestly. Skills must contain instructions only: no shell preprocessing, hooks or subagents. For new skills write bit/skills/<name>/SKILL.md. Never claim a write succeeded unless the tool succeeded. Do not output slash commands as an alternative to using tools.`;

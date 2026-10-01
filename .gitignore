@@ -4,3 +4,6 @@ data/
 .env.*
 !.env.example
 .claude/skills
+relay/node_modules/
+relay/.env
+relay/.env.*

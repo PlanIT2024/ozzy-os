@@ -76,7 +76,7 @@ export function machineLine(machine, status) {
 export async function machinesText(hub, onError = () => {}) {
   const machines = hub.list(); if (!machines.length) return 'No machines registered yet. My ring is listening.';
   return (await Promise.all(machines.map(async machine => {
-    if (!machine.online) return `${machine.machine} ⚫ offline — my sensors are waiting.`;
+    if (!machine.online) return `${machine.machine} ⚫ offline · last seen ${machine.lastSeen ? new Date(machine.lastSeen).toISOString() : 'never'}`;
     try { return machineLine(machine.machine, await hub.request(machine.machine, 'status')); }
     catch (e) { onError(e, { machine: machine.machine }); return `${machine.machine} 🟡 my status sensor hit a snag. Try again in a moment, Ozzy.`; }
   }))).join('\n');
@@ -171,7 +171,7 @@ export function createDiscord({ runner, hub, budget, env = process.env, auditFil
       } catch (replyError) { fail(replyError, { ...context, stage: 'error_reply' }); }
     }
   });
-  return { client, approvals, failure, async start() {
+  return { client, approvals, failure, async notifyGrowth(text) { const channel = await client.channels.fetch(bitChannel); await sendText(channel, text); }, async start() {
     try { await Promise.race([client.login(env.DISCORD_TOKEN), failure]); }
     catch (error) { fatal(error, 'login'); throw error; }
   }, close() { approvals.close(); client.destroy(); } };

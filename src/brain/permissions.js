@@ -6,7 +6,7 @@ export const BUILTINS = ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Skill'];
 export const CUSTOM = ['mcp__machines__list_machines', 'mcp__machines__machine_status'];
 const writes = new Set(['Write', 'Edit']);
 const inside = (base, file) => file === base || file.startsWith(base + path.sep);
-export function createPermissions({ root = ROOT, approve = async () => false, notify = async () => {}, context = '' } = {}) {
+export function createPermissions({ root = ROOT, approve = async () => false, notify = async () => {}, afterWrite = async () => {}, context = '' } = {}) {
   root = fs.realpathSync(root);
   const auditFile = path.join(root, 'data/audit.log');
   fs.mkdirSync(path.dirname(auditFile), { recursive: true, mode: 0o700 });
@@ -111,6 +111,7 @@ export function createPermissions({ root = ROOT, approve = async () => false, no
         if (writes.has(event.tool_name)) {
           const file = safePath(event.tool_input.file_path);
           if (inside(path.join(root, 'bit/memory'), file)) await notify(`📝 noted: ${path.relative(root, file)}`);
+          await afterWrite(file);
         }
         return {};
       }] }],
