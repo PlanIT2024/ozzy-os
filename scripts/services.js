@@ -17,7 +17,7 @@ if (process.platform === 'linux') {
       if (nodeOnly) content = content.replace('After=bit-brain.service\nWants=bit-brain.service\n', 'After=network-online.target\nWants=network-online.target\n');
       fs.writeFileSync(path.join(directory, unit), content);
     }
-    run('systemctl', ['--user', 'daemon-reload']); run('systemctl', ['--user', 'enable', '--now', ...units]);
+    run('systemctl', ['--user', 'daemon-reload']); run('systemctl', ['--user', 'reset-failed', ...units], true); run('systemctl', ['--user', 'enable', ...units]); run('systemctl', ['--user', 'restart', ...units]);
   } else if (action === 'uninstall') {
     run('systemctl', ['--user', 'disable', '--now', ...units], true);
     for (const unit of units) fs.rmSync(path.join(directory, unit), { force: true });

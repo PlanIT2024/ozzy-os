@@ -1,12 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT } from '../shared.js';
+import { publicURL } from './web.js';
 import { validateSkill } from './skills.js';
-export const BUILTINS = ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Skill'];
+export const BUILTINS = ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Skill', 'WebSearch', 'WebFetch'];
 export const CUSTOM = ['mcp__machines__list_machines', 'mcp__machines__machine_status'];
 const writes = new Set(['Write', 'Edit']);
 const inside = (base, file) => file === base || file.startsWith(base + path.sep);
-export function createPermissions({ root = ROOT, approve = async () => false, notify = async () => {}, afterWrite = async () => {}, context = '' } = {}) {
+export function createPermissions({ root = ROOT, approve = async () => false, notify = async () => {}, afterWrite = async () => {}, context = '', web, sessionKey = context, resolve } = {}) {
   root = fs.realpathSync(root);
   const auditFile = path.join(root, 'data/audit.log');
   fs.mkdirSync(path.dirname(auditFile), { recursive: true, mode: 0o700 });
@@ -50,8 +51,20 @@ export function createPermissions({ root = ROOT, approve = async () => false, no
       if (signal?.aborted) throw new Error('Request cancelled');
       if (CUSTOM.includes(name)) result = { behavior: 'allow', updatedInput: input };
       else {
-        if (!BUILTINS.includes(name)) throw new Error('Tool is disabled in Phase 1');
-        if (name === 'Skill') {
+        if (!BUILTINS.includes(name)) throw new Error('Tool is disabled');
+        if (name === 'WebSearch' || name === 'WebFetch') {
+          if (!web) throw new Error('Web policy unavailable');
+          if (name === 'WebFetch') {
+            await publicURL(input.url, resolve);
+            if (!web.session(sessionKey).urls.includes(input.url)) {
+              if (!await approve({ tool: name, url: input.url, input, signal })) throw new Error('URL denied or approval timed out');
+              await publicURL(input.url, resolve);
+              audit({ tool: name, url: input.url, decision: 'approved', tainted: web.session(sessionKey).tainted });
+            }
+          } else if (typeof input.query !== 'string' || !input.query.trim()) throw new Error('Missing search query');
+          web.reserve(name);
+          result = { behavior: 'allow', updatedInput: input };
+        } else if (name === 'Skill') {
           if (typeof input.skill !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(input.skill)) throw new Error('Only local bIT skills are allowed');
           const file = safePath(`bit/skills/${input.skill}/SKILL.md`);
           if (!fs.existsSync(file)) throw new Error('Unknown bIT skill');
@@ -69,8 +82,8 @@ export function createPermissions({ root = ROOT, approve = async () => false, no
           if (name === 'Grep' || name === 'Glob') checkTree(target);
           if (writes.has(name)) {
             if (area === 'persona') throw new Error('Persona is read-only');
-            if (area === 'skills') {
-              if (path.basename(target) === 'SKILL.md') {
+            if (area === 'skills' || (area === 'memory' && web?.session(sessionKey).tainted)) {
+              if (area === 'skills' && path.basename(target) === 'SKILL.md') {
                 let proposed = input.content;
                 if (name === 'Edit') {
                   const before = fs.readFileSync(target, 'utf8');
@@ -78,7 +91,13 @@ export function createPermissions({ root = ROOT, approve = async () => false, no
                 }
                 validateSkill(proposed);
               }
-              if (!await approve({ tool: name, file: path.relative(root, target), input, signal })) throw new Error('Skill change denied or approval timed out');
+              const before = fs.existsSync(target) ? fs.readFileSync(target, 'utf8') : '';
+              const after = name === 'Write' ? input.content : input.replace_all ? before.replaceAll(input.old_string, input.new_string) : before.replace(input.old_string, input.new_string);
+              const oldLines = before ? before.split('\n') : [], newLines = after ? after.split('\n') : [];
+              const diff = `--- ${path.relative(root, target)} (before)\n+++ ${path.relative(root, target)} (after)\n@@ -${oldLines.length ? 1 : 0},${oldLines.length} +${newLines.length ? 1 : 0},${newLines.length} @@\n` + [...oldLines.map(line => '-' + line), ...newLines.map(line => '+' + line)].join('\n');
+              if (!await approve({ tool: name, file: path.relative(root, target), input, diff, signal })) throw new Error('Change denied or approval timed out');
+              safePath(target);
+              if ((fs.existsSync(target) ? fs.readFileSync(target, 'utf8') : '') !== before) throw new Error('File changed during approval; review again');
               // Recheck after the ten-minute approval window.
               safePath(target);
             }
@@ -87,8 +106,8 @@ export function createPermissions({ root = ROOT, approve = async () => false, no
         }
       }
     } catch (e) { result = { behavior: 'deny', message: e.message }; }
-    // Do not log file contents, replacement text, tokens, or search text.
-    audit({ tool: name, path: input?.file_path || input?.path, skill: input?.skill, decision: result.behavior, reason: result.message });
+    // Log web queries/URLs for owner review, never file contents or replacement text.
+    audit({ tool: name, path: input?.file_path || input?.path, skill: input?.skill, query: input?.query, url: input?.url, tainted: web?.session(sessionKey).tainted || false, decision: result.behavior, reason: result.message });
     return result;
   }
   const approved = new Map();
@@ -107,7 +126,13 @@ export function createPermissions({ root = ROOT, approve = async () => false, no
       }] }],
       PostToolUse: [{ hooks: [async event => {
         approved.delete(event.tool_use_id);
-        audit({ tool: event.tool_name, decision: 'completed' });
+        if (['WebSearch','WebFetch'].includes(event.tool_name)) {
+          web.result(sessionKey, event.tool_name, event.tool_response);
+          audit({ tool: event.tool_name, query: event.tool_input.query, url: event.tool_input.url, decision: 'completed', tainted: true });
+          if (event.tool_name === 'WebFetch' && event.tool_response?.url) {
+            try { await publicURL(event.tool_response.url, resolve); } catch (error) { return { decision: 'block', reason: error.message }; }
+          }
+        } else audit({ tool: event.tool_name, decision: 'completed' });
         if (writes.has(event.tool_name)) {
           const file = safePath(event.tool_input.file_path);
           if (inside(path.join(root, 'bit/memory'), file)) await notify(`📝 noted: ${path.relative(root, file)}`);
@@ -115,7 +140,7 @@ export function createPermissions({ root = ROOT, approve = async () => false, no
         }
         return {};
       }] }],
-      PostToolUseFailure: [{ hooks: [async event => { approved.delete(event.tool_use_id); audit({ tool: event.tool_name, decision: 'failed' }); return {}; }] }],
+      PostToolUseFailure: [{ hooks: [async event => { approved.delete(event.tool_use_id); audit({ tool: event.tool_name, query: event.tool_input?.query, url: event.tool_input?.url, tainted: web?.session(sessionKey).tainted || false, decision: 'failed' }); return {}; }] }],
     },
   };
 }

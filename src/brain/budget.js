@@ -7,7 +7,7 @@ export class Budget {
     this.state = readJSON(file, { months: {}, sessions: {}, uncertain: false });
   }
   month() { const parts = new Intl.DateTimeFormat('en-US', { timeZone: this.timezone, year: 'numeric', month: '2-digit' }).formatToParts(this.now()); return parts.find(p => p.type === 'year').value + '-' + parts.find(p => p.type === 'month').value; }
-  status() { const month = this.month(); const spent = this.state.months[month] || 0; return { month, spent, cap: this.cap, remaining: Math.max(0, this.cap - spent), uncertain: this.state.uncertain }; }
+  status() { const month = this.month(); const sdkSpent = this.state.months[month] || 0; const searchEstimate = this.web?.status().estimatedSearchUSD || 0; const spent = sdkSpent + searchEstimate; return { month, spent, sdkSpent, searchEstimate, cap: this.cap, remaining: Math.max(0, this.cap - spent), uncertain: this.state.uncertain }; }
   begin() { this.state.uncertain = true; saveJSON(this.file, this.state); }
   record(session, total) {
     if (!Number.isFinite(total) || total < 0 || !session) throw new Error('Missing SDK cost data');

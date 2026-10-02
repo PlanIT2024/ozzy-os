@@ -1,3 +1,4 @@
+import { retryNetwork, temporary } from '../networkRetry.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { inspect } from 'node:util';
@@ -15,7 +16,7 @@ export function splitMessage(text, limit = 2000) {
   if (text) chunks.push(text); return chunks;
 }
 export async function sendText(channel, text) {
-  for (const content of splitMessage(text)) await channel.send({ content, allowedMentions: { parse: [] } });
+  for (const content of splitMessage(text)) await channel.send({ content, flags: MessageFlags.SuppressEmbeds, allowedMentions: { parse: [] } });
 }
 export function allowedLocation(channel, bitChannel) { return Boolean(channel && (channel.isDMBased() || channel.id === bitChannel || (channel.isThread() && channel.parentId === bitChannel))); }
 export function acceptsMessage(message, owner, bitChannel) { return !message.author.bot && message.author.id === owner && allowedLocation(message.channel, bitChannel); }
@@ -29,20 +30,22 @@ export function commands() {
 }
 export class ApprovalRelay {
   constructor(owner, { timeout = 600000 } = {}) { this.owner = owner; this.timeout = timeout; this.pending = new Map(); }
-  async request(channel, { tool, file, input, signal }) {
+  async request(channel, { tool, file, url, input, diff, signal }) {
     if (signal?.aborted) return false;
     const id = randomUUID();
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`approve:${id}:yes`).setLabel('✅ Approve').setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId(`approve:${id}:no`).setLabel('❌ Deny').setStyle(ButtonStyle.Danger));
     // Show the complete proposed operation; large edits are reviewable as an attachment.
-    const review = JSON.stringify({ tool, file, ...input }, null, 2);
-    const message = await channel.send({ content: `Skill change needs your say-so, Ozzy: ${tool} ${file}\nExpires in 10 minutes.`, files: [{ attachment: Buffer.from(review), name: 'proposed-skill-change.json' }], components: [row], allowedMentions: { parse: [] } });
+    const review = diff || JSON.stringify({ tool, file, ...input }, null, 2);
+    const target = url || file;
+    const label = target?.length > 1700 ? 'Full URL in proposed-operation.json (including query string)' : target;
+    const message = await channel.send({ flags: MessageFlags.SuppressEmbeds, content: `This needs your say-so, Ozzy: ${tool} ${label}\nExpires in 10 minutes.`, files: [{ attachment: Buffer.from(review), name: diff ? 'proposed-change.diff' : 'proposed-operation.json' }], components: [row], allowedMentions: { parse: [] } });
     return new Promise(resolve => {
       let done = false;
       const finish = async (allowed, reason) => {
         if (done) return; done = true; clearTimeout(timer); signal?.removeEventListener('abort', cancel); this.pending.delete(id);
-        try { await message.edit({ content: `${allowed ? '✅ Approved' : '❌ Denied'}: ${file} (${reason})`, components: [], allowedMentions: { parse: [] } }); } catch { /* decision still resolves if Discord loses the message */ }
+        try { await message.edit({ content: `${allowed ? '✅ Approved' : '❌ Denied'}: ${label} (${reason})`, components: [], allowedMentions: { parse: [] } }); } catch { /* decision still resolves if Discord loses the message */ }
         resolve(allowed);
       };
       const cancel = () => { void finish(false, 'cancelled'); };
@@ -104,14 +107,23 @@ export function createDiscord({ runner, hub, budget, env = process.env, auditFil
     fail(reason, { stage }); rejectFailure(reason);
   };
   client.once(Events.ClientReady, ready => console.log(`Discord connected as ${ready.user.tag}`));
-  client.on(Events.Error, error => fatal(error));
-  client.on(Events.ShardError, error => fatal(error));
-  client.on(Events.Invalidated, () => fatal(new Error('Discord session invalidated')));
+  let reconnecting, closed = false;
+  const reconnect = () => {
+    if (closed || fatalSeen) return;
+    if (reconnecting) return reconnecting;
+    reconnecting = Promise.resolve().then(() => retryNetwork(() => client.login(env.DISCORD_TOKEN), { stopped: () => closed, log: console.log })).catch(error => { fatal(error, 'login/reconnect'); throw error; }).finally(() => { reconnecting = null; });
+    void reconnecting.catch(() => {});
+    return reconnecting;
+  };
+  const gatewayError = error => { if (temporary(error)) { fail(error, { stage: 'temporary_gateway' }); reconnect(); } else fatal(error); };
+  client.on(Events.Error, gatewayError);
+  client.on(Events.ShardError, gatewayError);
+  client.on(Events.Invalidated, reconnect);
   client.on(Events.ShardDisconnect, event => {
     if ([4004, 4010, 4011, 4012, 4013, 4014].includes(event.code)) {
       const error = new Error(event.code === 4014 ? 'Disallowed gateway intents (4014)' : `Gateway closed (${event.code}): ${event.reason || 'authentication/configuration error'}`);
       error.code = event.code; fatal(error);
-    }
+    } else reconnect();
   });
   client.on('messageCreate', async message => {
     const filters = { owner: message.author.id === owner, location: allowedLocation(message.channel, bitChannel), human: !message.author.bot };
@@ -151,7 +163,8 @@ export function createDiscord({ runner, hub, budget, env = process.env, auditFil
           response = `Default personality saved: ${mood}. Sage still takes the night shift, 10pm–5am.`; break;
         }
         case 'budget': {
-          const s = budget.status(); response = `Juice meter · ${s.month}: $${s.spent.toFixed(4)} / $${s.cap.toFixed(2)}${s.uncertain ? ' — reconciliation needed after an interrupted run' : ''}`; break;
+          const w = runner.web?.status();
+          const s = budget.status(); response = `Juice meter · ${s.month}: $${s.spent.toFixed(4)} / $${s.cap.toFixed(2)}${s.uncertain ? ' — reconciliation needed after an interrupted run' : ''}`; if (w) response += `\nWeb today: ${w.daily.search}/${w.searchCap} searches · ${w.daily.fetch}/${w.fetchCap} fetches; month: ${w.monthly.search} searches · ${w.monthly.fetch} fetches. Unreported search surcharge estimate: $${w.estimatedSearchUSD.toFixed(2)} separately (included in juice meter; SDK reports ${w.sdkSearches} searches with fees).`; break;
         }
         case 'machines': response = await machinesText(hub, (error, details) => fail(error, { ...context, ...details })); break;
         case 'reset':
@@ -161,7 +174,7 @@ export function createDiscord({ runner, hub, budget, env = process.env, auditFil
         default: response = 'Unknown command.';
       }
       const chunks = splitMessage(response); await interaction.editReply({ content: chunks.shift(), allowedMentions: { parse: [] } });
-      for (const content of chunks) await interaction.followUp({ content, allowedMentions: { parse: [] } });
+      for (const content of chunks) await interaction.followUp({ content, flags: MessageFlags.SuppressEmbeds, allowedMentions: { parse: [] } });
     } catch (error) {
       fail(error, context);
       const response = { content: 'My ring hit a snag, Ozzy. Try again in a moment.', allowedMentions: { parse: [] } };
@@ -172,9 +185,9 @@ export function createDiscord({ runner, hub, budget, env = process.env, auditFil
     }
   });
   return { client, approvals, failure, async notifyGrowth(text) { const channel = await client.channels.fetch(bitChannel); await sendText(channel, text); }, async start() {
-    try { await Promise.race([client.login(env.DISCORD_TOKEN), failure]); }
+    try { await Promise.race([reconnect(), failure]); }
     catch (error) { fatal(error, 'login'); throw error; }
-  }, close() { approvals.close(); client.destroy(); } };
+  }, close() { closed = true; approvals.close(); client.destroy(); } };
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href && process.argv.includes('--register')) {
   required(process.env, ['DISCORD_TOKEN', 'DISCORD_APP_ID', 'DISCORD_GUILD_ID']);

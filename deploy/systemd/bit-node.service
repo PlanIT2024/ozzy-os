@@ -2,8 +2,7 @@
 Description=bIT OZZY OS status node
 After=bit-brain.service
 Wants=bit-brain.service
-StartLimitIntervalSec=120
-StartLimitBurst=5
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple

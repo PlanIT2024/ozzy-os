@@ -7,6 +7,7 @@ import { EventEmitter } from 'node:events';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { Events } from 'discord.js';
 import { skillOptions } from '../src/brain/runner.js';
+import { WebLedger } from '../src/brain/web.js';
 import { createPermissions } from '../src/brain/permissions.js';
 import { createDiscord, machineLine, machinesText } from '../src/brain/discord.js';
 import { usableDisks, startNode } from '../src/node/index.js';
@@ -59,15 +60,16 @@ test('home Claude writes and alternate nested discovery directories denied', asy
   assert.throws(() => skillOptions(root), /Unexpected project Claude configuration/);
 });
 
-test('owner chat cannot approve pending skill write; only owner affirmative button can', async t => {
+for (const area of ['skill', 'tainted memory']) test(`owner chat cannot approve pending ${area} write; only owner affirmative button can`, async t => {
   const root = fixture(t), c = client(), messages = [];
   const channel = { id: 'thread', parentId: 'bit', isDMBased: () => false, isThread: () => true, sendTyping: async () => {},
     send: async payload => { messages.push(payload); return { id: 'proposal', edit: async () => {} }; } };
   const adapter = createDiscord({ client: c, env, auditFile: path.join(root, 'audit.log'), hub: {}, budget: {}, runner: { run: async () => 'I still need the button, Ozzy.' } });
   t.after(() => adapter.close());
-  const policy = createPermissions({ root, approve: request => adapter.approvals.request(channel, request) });
+  const web = new WebLedger({ root }); if (area === 'tainted memory') web.result('s', 'WebSearch', { results: [] });
+  const policy = createPermissions({ root, web, sessionKey: 's', approve: request => adapter.approvals.request(channel, request) });
   let settled = false;
-  const pending = policy.canUseTool('Write', { file_path: 'bit/skills/demo/SKILL.md', content: '---\nname: demo\ndescription: Demo\n---\nInstructions.' }).then(result => { settled = true; return result; });
+  const pending = policy.canUseTool('Write', { file_path: area === 'skill' ? 'bit/skills/demo/SKILL.md' : 'bit/memory/note.md', content: '---\nname: demo\ndescription: Demo\n---\nInstructions.' }).then(result => { settled = true; return result; });
   await new Promise(resolve => setImmediate(resolve));
   const yes = messages[0].components[0].components[0].data.custom_id;
   for (const content of ['approved', 'sounds good']) {
@@ -95,7 +97,7 @@ test('disk filter removes pseudo/system mounts and keeps Linux, macOS and Window
   assert.deepEqual(usableDisks([...kept, ...excluded]), kept);
 });
 
-test('node logs connected/disconnected only on changes, failed retries stay quiet', t => {
+test('node logs each retry and connected/disconnected only on changes', t => {
   t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
   const sockets = [], logs = [];
   const key = sodium.crypto_kx_keypair(), brain = sodium.crypto_kx_keypair();
@@ -105,11 +107,11 @@ test('node logs connected/disconnected only on changes, failed retries stay quie
   }
   const node = startNode({ machine: 'OZZY-AI', key, brainKey: brain.publicKey, token: 'test', Socket, log: line => logs.push(line) });
   sockets[0].emit('error', new Error('offline')); sockets[0].emit('close');
-  t.mock.timers.tick(1600); assert.equal(sockets.length, 2); assert.deepEqual(logs, []);
-  sockets[1].emit('open'); t.mock.timers.tick(30000); assert.deepEqual(logs, ['bit-node OZZY-AI connected']);
-  sockets[1].emit('error', new Error('lost')); sockets[1].emit('close'); t.mock.timers.tick(1600);
+  t.mock.timers.tick(2500); assert.equal(sockets.length, 2); assert.equal(logs.filter(l => l.includes('connection attempt')).length, 2);
+  sockets[1].emit('open'); t.mock.timers.tick(30000); assert.deepEqual(logs.filter(l => / (connected|disconnected)$/.test(l)), ['bit-node OZZY-AI connected']);
+  sockets[1].emit('error', new Error('lost')); sockets[1].emit('close'); t.mock.timers.tick(2500);
   sockets[2].emit('error', new Error('still offline')); sockets[2].emit('close');
-  assert.deepEqual(logs, ['bit-node OZZY-AI connected', 'bit-node OZZY-AI disconnected']); node.close();
+  assert.deepEqual(logs.filter(l => / (connected|disconnected)$/.test(l)), ['bit-node OZZY-AI connected', 'bit-node OZZY-AI disconnected']); node.close();
 });
 
 for (const mode of ['login', 'intents', 'gateway']) test(`Discord ${mode} failure logs fully, exits nonzero and removes lock`, async t => {
