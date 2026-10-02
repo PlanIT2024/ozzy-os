@@ -9,8 +9,8 @@ description: Use when Ozzy sends a URL or pasted webpage content and asks for a 
 Use this skill when Ozzy sends a URL or pasted webpage content and asks for a summary.
 
 ## Instructions
-1. If Ozzy provides a URL only (no content), ask him to paste the page text/content, since there's no live web-fetch tool available — do not claim to have fetched or read the page unless the content was actually provided.
-2. Once the page content is available, read through it and produce:
+1. If Ozzy sends a URL, use the WebFetch tool to fetch and read the page content directly. If the fetch fails or the page is inaccessible, tell him honestly instead of guessing at the content. If he pastes raw text instead of a URL, use that directly.
+2. Once the page content is available (fetched or pasted), read through it and produce:
    - A 2-3 sentence TL;DR at the top.
    - A short bulleted list (3-6 bullets) of the key points.
    - Note the source URL (if given) at the bottom.
