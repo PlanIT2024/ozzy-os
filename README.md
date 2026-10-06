@@ -256,8 +256,14 @@ Screenshot-enabled model turns use fresh **non-persistent SDK sessions** and
 skip prompt history, including the SDK's MCP image-file cache. They do not resume
 or save image-bearing transcripts. A real SDK test against a local fake API with
 a synthetic image verifies no pixel bytes/files are saved. Follow-up screenshots
-require another capture; the ordinary pre-screen conversation remains resumable
-after the grant is off. See [PHASE5-PROOF.md](PHASE5-PROOF.md).
+require another capture. A bounded brain-owned text transcript in
+`data/thread-transcripts/` carries owner messages, replies and screenshot
+metadata/description placeholders across grant on/off and brain restarts. Older
+turns use a capped extractive summary. Screen runs receive this text context;
+normal SDK runs also receive it to bridge intervening screen turns. Existing SDK
+sessions are bootstrapped from conversational text only. `/reset` clears the
+transcript. Without a grant, system context explains `/screen on` while keeping
+the screenshot tool hidden. See [PHASE5-PROOF.md](PHASE5-PROOF.md).
 
 ## Budget, diagnostics and validation
 

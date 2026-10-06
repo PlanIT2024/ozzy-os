@@ -147,3 +147,53 @@ use `/screen on`, ask “what's on my screen?”, check the desktop notification
 attachment. To test an attachment explicitly, ask “Please attach the screenshot.”
 Live desktop capture, consent frequency and notification appearance remain pending.
 SCREEN_ENABLED=false is left in both actual .env and .env.example.
+
+## Phase 5 fixes — 2026-10-06
+
+Branch: `phase5-fixes`, based on main (`476edc5`).
+
+Conversation continuity now uses brain-owned text-only JSON files in
+`data/thread-transcripts/` (hashed thread filenames, mode 0600, ignored by git).
+The store contains owner messages, bIT replies and screenshot metadata plus a
+bounded reply-description placeholder. It never receives SDK image/tool-result
+blocks. Text serialization removes image data URIs and long encoded blobs.
+Recent turns are limited to 24 / 48,000 serialized characters; older turns are
+condensed into an extractive summary capped at 12,000 characters. Individual
+turns are capped at 12,000 characters. This summarization is intentionally lossy.
+
+Every run receives the capped text history. Screenshot-enabled turns remain
+`persistSession:false` with `CLAUDE_CODE_SKIP_PROMPT_HISTORY=1`, without resuming
+or saving their ephemeral SDK IDs. Normal runs resume their original SDK session
+and receive the text bridge, including intervening screenshot descriptions.
+Existing threads bootstrap conversational text from their prior SDK JSONL,
+excluding image blocks, tool results and sidechains. Turning a grant on/off
+leaves the text history unchanged; `/reset` clears it. Images are not retained
+for follow-up questions: bIT has the description and must recapture to inspect
+pixels again.
+
+When an online machine advertises screen capture, the system prompt tells bIT
+that screenshots are available and that `/screen on` enables them for 15 minutes
+in this thread. The screenshot MCP server remains absent without an active
+grant; scheduled runs still cannot use it.
+
+Validation: `npm test` — **86 passed, 0 failed**, including all existing tests.
+The real installed Agent SDK test uses a local fake API and synthetic image:
+first owner message → persistent session → simulate upgrade by removing the
+brain transcript → grant on → screenshot → another screen run → grant off →
+normal resumed run. Assertions inspect actual main model API requests for the
+first message and the screenshot description after grant off. Recursive scans
+of the test workspace, including SDK session files and the brain transcript,
+reject image base64, image files and PNG/JPEG magic bytes. Additional regressions
+cover grant-on history invariance, brain restart, reset, bounded summaries,
+legacy import filtering and no-grant guidance/tool absence. No live desktop
+capture or owner Discord conversation was performed for this fix.
+
+Deployment: `/usr/bin/node scripts/services.js install` succeeded at
+2026-10-06 18:23:56 UTC. `systemctl --user show` verified both services
+`active/running`, with ExecStart `/usr/bin/node`:
+
+- brain PID 173110; Discord connected as bIT Agent#6243 at 18:23:58 UTC.
+- node PID 173111; connected and authenticated online at 18:23:59 UTC.
+
+The node's initial ECONNREFUSED during the restart recovered on its second
+attempt. No `.env` setting, transport, relay, crypto or web policy was changed.

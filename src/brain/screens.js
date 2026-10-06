@@ -54,7 +54,7 @@ export class ScreenGrants {
     try { const g = this.grant(thread); return `Screen access: ${g.machine} until ${new Intl.DateTimeFormat('en-US', { timeZone: this.timezone, dateStyle: 'medium', timeStyle: 'long' }).format(new Date(g.expiresAt))} · this conversation only.`; }
     catch (error) { return error.message; }
   }
-  context({ hub, thread, scheduled = false, tainted = () => false, approve = async () => false, notify = async () => {}, publish, attachmentRequested = false }) {
+  context({ hub, thread, scheduled = false, tainted = () => false, approve = async () => false, notify = async () => {}, publish, onCapture = () => {}, attachmentRequested = false }) {
     const receipts = new Map(); let published = false;
     const gate = machine => {
       if (scheduled) throw new Error('Scheduled jobs cannot capture screens, Ozzy.');
@@ -107,6 +107,7 @@ export class ScreenGrants {
             monitors: result.monitors.map(m => ({ connector: typeof m.connector === 'string' ? m.connector.slice(0,64) : undefined, x: m.x, y: m.y, width: m.width, height: m.height, scale: m.scale, primary: m.primary, coordinateSpace: 'logical' })),
             grantId: receipt.grant.id, approvalId: receipt.approvalId };
           this.audit({ ...metadata, decision: 'captured' });
+          onCapture({ machine: metadata.machine, capturedAt: metadata.capturedAt });
           await notify(`📸 looked at ${details.displayName}'s screen`);
           if (attachmentRequested && publish && !published) { published = true; await publish({ buffer, mimeType: result.mimeType, metadata }); }
           return { content: [{ type: 'text', text: JSON.stringify(metadata) }, { type: 'image', data: result.data, mimeType: result.mimeType }] };
