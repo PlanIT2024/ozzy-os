@@ -55,7 +55,7 @@ export function createPermissions({ root = ROOT, approve = async () => false, no
         if (!reminders) throw new Error('Reminder store unavailable');
         const proposal = reminders.proposal(input.when, input.text);
         if (web?.session(sessionKey).tainted) {
-          if (!await approve({ tool: name, file: `Reminder at ${proposal.resolved}`, input: { ...input, due: proposal.due }, signal })) throw new Error('Reminder denied or approval timed out');
+          if (!await approve({ tool: name, action: 'Reminder', description: proposal.resolved, input: { ...input, due: proposal.due }, signal })) throw new Error('Reminder denied or approval timed out');
         }
         result = { behavior: 'allow', updatedInput: { ...input, when: proposal.due } };
       } else if (CUSTOM.includes(name)) result = { behavior: 'allow', updatedInput: input };

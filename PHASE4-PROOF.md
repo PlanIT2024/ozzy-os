@@ -111,3 +111,25 @@ list_reminders. Runtime files stay under gitignored `data/`.
 In Discord: “remind me in 2 minutes to stretch”. Verify the exact ⏰ resolved-time
 confirmation, then the owner mention in that thread about two minutes later.
 No live test reminder was created on the owner's behalf.
+
+## Reminder approval regression — 2026-10-06
+
+The reported live reminder's audit context was an existing conversation whose
+WebFetch completed on October 2. Its tainted state correctly required the owner
+button; that existing taint was not cleared or bypassed.
+
+Top-level #bit routing now explicitly requests a fresh Runner session when
+starting a thread. The reset is persisted before SDK startup, so failure before
+init cannot restore an old resumed session with a fresh taint key. Continuing
+thread replies retain their existing session and taint.
+
+Non-file reminder approvals use `action: Reminder` and a resolved-time description,
+not a fabricated file path. The card and attached operation JSON show the action,
+exact due timestamp and reminder text; file proposals keep their normal diff UI.
+
+Final regression suite: **69 passed, 0 failed**. The new end-to-end test routes a
+top-level message through Discord, Runner, permission hooks and the real in-process
+reminder MCP server. It verifies automatic saved reminders and ⏰ with no approval
+card, then verifies button approval after taint in the continuing thread. It also
+asserts the Reminder action label and absence of a file field. A separate test
+checks persisted session reset when the SDK fails before initialization.

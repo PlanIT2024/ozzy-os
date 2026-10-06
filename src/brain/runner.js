@@ -76,7 +76,10 @@ export class Runner {
       if (balance.uncertain) return 'My juice meter lost track of the last run. Ozzy, please reconcile data/budget.json before I spend any more.';
       if (balance.remaining <= 0) return 'My neon ring is running on fumes, Ozzy. I’m out of juice until next month. Machines and mood controls still work.';
       const isolatedSkills = skillOptions(this.root);
-      if (fresh) { delete this.sessions[channel]; delete this.webKeys[channel]; }
+      if (fresh) {
+        delete this.sessions[channel]; delete this.webKeys[channel];
+        saveJSON(this.sessionFile, this.sessions);
+      }
       const sessionKey = this.webKeys[channel] ||= (this.sessions[channel] || randomUUID());
       saveJSON(this.webKeysFile, this.webKeys);
       if (!scheduled) this.web.owner(sessionKey, prompt);

@@ -38,18 +38,18 @@ export function commands() {
 }
 export class ApprovalRelay {
   constructor(owner, { timeout = 600000 } = {}) { this.owner = owner; this.timeout = timeout; this.pending = new Map(); }
-  async request(channel, { tool, file, url, input, diff, signal }) {
+  async request(channel, { tool, file, url, action, description, input, diff, signal }) {
     if (signal?.aborted) return false;
     const id = randomUUID();
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`approve:${id}:yes`).setLabel('✅ Approve').setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId(`approve:${id}:no`).setLabel('❌ Deny').setStyle(ButtonStyle.Danger));
     // Show the complete proposed operation; large edits are reviewable as an attachment.
-    const review = diff || JSON.stringify({ tool, file, ...input }, null, 2);
-    const target = url || file;
+    const review = diff || JSON.stringify({ tool, ...(file ? { file } : {}), ...(action ? { action, description } : {}), ...input }, null, 2);
+    const target = url || file || [action, description].filter(Boolean).join(' · ') || tool;
     const label = target?.length > 1700 ? 'Full URL in proposed-operation.json (including query string)' : target;
     const preview = diff && diff.length <= 1400 && !diff.includes('```') ? `\n\`\`\`diff\n${diff}\n\`\`\`` : '';
-    const message = await channel.send({ flags: MessageFlags.SuppressEmbeds, content: `This needs your say-so, Ozzy: ${tool} ${label}\nExpires in 10 minutes.${preview}`, files: [{ attachment: Buffer.from(review), name: diff ? 'proposed-change.diff' : 'proposed-operation.json' }], components: [row], allowedMentions: { parse: [] } });
+    const message = await channel.send({ flags: MessageFlags.SuppressEmbeds, content: `This needs your say-so, Ozzy: ${action ? label : `${tool} ${label}`}\nExpires in 10 minutes.${preview}`, files: [{ attachment: Buffer.from(review), name: diff ? 'proposed-change.diff' : 'proposed-operation.json' }], components: [row], allowedMentions: { parse: [] } });
     return new Promise(resolve => {
       let done = false;
       const finish = async (allowed, reason) => {
@@ -141,9 +141,10 @@ export function createDiscord({ runner, hub, budget, scheduler, reminders, env =
     let channel = message.channel;
     try {
       if (!message.content.trim()) return;
-      if (channel.id === bitChannel && !channel.isThread()) channel = await message.startThread({ name: `bIT · ${message.content.slice(0, 70).replace(/\s+/g, ' ')}`, autoArchiveDuration: 1440 });
+      const fresh = channel.id === bitChannel && !channel.isThread();
+      if (fresh) channel = await message.startThread({ name: `bIT · ${message.content.slice(0, 70).replace(/\s+/g, ' ')}`, autoArchiveDuration: 1440 });
       await channel.sendTyping();
-      const response = await runner.run(channel.id, message.content, { notify: text => sendText(channel, text), approve: request => approvals.request(channel, request) });
+      const response = await runner.run(channel.id, message.content, { fresh, notify: text => sendText(channel, text), approve: request => approvals.request(channel, request) });
       await sendText(channel, response);
     } catch (e) { fail(e); await sendText(channel, 'My ring hit a snag. Check the brain console, Ozzy.').catch(fail); }
   });

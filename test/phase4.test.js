@@ -157,3 +157,49 @@ test('Discord reconciles previously delivered reminder after a crash without a s
   const {d,client}=adapter(t,root);client.user={id:'bot'};client.channels={fetch:async()=>target};
   const sent=await d.deliverReminder({id:'same-id',due:'2026-10-06T14:01Z',claimedAt:'2026-10-06T14:01Z',text:'stretch'},{late:true,recover:true});assert.equal(sent.id,'already-sent');assert.equal(sends,0);
 });
+test('top-level #bit reminder starts fresh and automatically sends ⏰; continuing tainted thread uses a Reminder action card', async t => {
+  const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+  const { InMemoryTransport } = await import('@modelcontextprotocol/sdk/inMemory.js');
+  const root=fixture(t), sent=[], reminders=new Reminders({root}), budget=new Budget({file:path.join(root,'data/budget.json'),cap:1});
+  let runs=0;
+  const runner=new Runner({root,hub:{list:()=>[]},budget,reminders,queryFn:async function*({options}) {
+    runs++;
+    if(runs===1) assert.equal(options.resume,undefined);
+    else assert.equal(options.resume,'reminder-session');
+    const raw={when:'in 20 minutes',text:'stretch'};
+    const toolName='mcp__reminders__set_reminder';
+    const decision=await options.hooks.PreToolUse[0].hooks[0]({tool_name:toolName,tool_input:raw},`call-${runs}`,{});
+    assert.equal(decision.hookSpecificOutput.permissionDecision,'allow');
+    const input=decision.hookSpecificOutput.updatedInput;
+    assert.equal((await options.canUseTool(toolName,input,{toolUseID:`call-${runs}`})).behavior,'allow');
+    const [serverTransport,clientTransport]=InMemoryTransport.createLinkedPair();
+    const client=new Client({name:'regression',version:'1.0.0'});
+    try {
+      await options.mcpServers.reminders.instance.connect(serverTransport);await client.connect(clientTransport);
+      const result=await client.callTool({name:'set_reminder',arguments:input});assert.ok(!result.isError);
+    } finally {await client.close();await options.mcpServers.reminders.instance.close();}
+    yield {type:'result',subtype:'success',session_id:'reminder-session',total_cost_usd:.01*runs,result:'Reminder saved.'};
+  }});
+  // Defend the top-level boundary even if Discord returns an id present in old runtime state.
+  runner.sessions.thread='old-session';runner.webKeys.thread='old-key';runner.web.result('old-key','WebFetch',{result:'old page'});
+  const thread={id:'thread',parentId:'bit',isThread:()=>true,isDMBased:()=>false,sendTyping:async()=>{},send:async p=>{sent.push(p);return {id:'card',edit:async()=>{}};}};
+  const {d,client,base}=adapter(t,root,{runner});t.after(()=>runner.close());
+  const handle=client.listeners('messageCreate')[0];
+  await handle({author:{id:'owner',bot:false},channel:base,content:'remind me in 20 minutes to stretch',startThread:async()=>thread});
+  assert.equal(reminders.list().length,1);assert.equal(d.approvals.pending.size,0);assert.ok(sent.some(p=>p.content.startsWith('⏰')));assert.ok(!sent.some(p=>p.components));assert.equal(runner.web.session(runner.webKeys.thread).tainted,false);
+  runner.web.result(runner.webKeys.thread,'WebSearch',{results:[]});
+  const continuing=handle({author:{id:'owner',bot:false},channel:thread,content:'remind me in 20 minutes to stretch again'});
+  for(let n=0;n<50 && !d.approvals.pending.size;n++) await new Promise(r=>setImmediate(r));
+  assert.equal(d.approvals.pending.size,1);assert.equal(reminders.list().length,1);
+  const card=sent.find(p=>p.components);assert.match(card.content,/Ozzy: Reminder · /);assert.ok(!card.content.includes('mcp__reminders__set_reminder'));
+  const operation=JSON.parse(card.files[0].attachment.toString());assert.equal(operation.action,'Reminder');assert.equal(Object.hasOwn(operation,'file'),false);assert.equal(operation.text,'stretch');assert.match(operation.due,/Z$/);
+  await d.approvals.handle({user:{id:'owner'},channelId:'thread',message:{id:'card'},customId:card.components[0].components[0].data.custom_id,deferUpdate:async()=>{}});
+  await continuing;assert.equal(reminders.list().length,2);assert.equal(runner.web.session(runner.webKeys.thread).tainted,true);
+});
+test('fresh session clears persisted resume state even if the SDK fails before init', async t => {
+  const root=fixture(t), budget=new Budget({file:path.join(root,'data/budget.json'),cap:1});
+  fs.mkdirSync(path.join(root,'data'),{recursive:true});fs.writeFileSync(path.join(root,'data/sessions.json'),JSON.stringify({thread:'old-session'}));
+  const runner=new Runner({root,hub:{},budget,queryFn:async function*(){throw new Error('simulated startup failure');}});
+  await runner.run('thread','new message',{fresh:true,notify:async()=>{},approve:async()=>false});
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root,'data/sessions.json'),'utf8')).thread,undefined);
+});
