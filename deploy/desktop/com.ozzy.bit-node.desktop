@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=bIT
+Comment=Owner-authorized read-only screen capture
+Exec=__NODE__ __ROOT__/src/node/index.js
+Icon=camera-photo
+NoDisplay=true
+Terminal=false

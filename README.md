@@ -123,9 +123,9 @@ References: [libsodium key exchange](https://libsodium.gitbook.io/doc/key_exchan
 
 ## Discord, memory, skills and growth commits
 
-Only the owner is handled in #bit, its threads and DMs. Top-level #bit messages create separate threads/sessions; thread replies resume them. Guild slash commands are `/machines`, `/mood`, `/budget`, `/schedule`, `/reset`. `/machines` shows one line per node, such as `OZZY-AI 🟢 up 3d · CPU 8% · RAM 6/50 GB · disk 6%`; offline nodes show last-seen time (or never). Last-seen registry timestamps are in-memory and reset on brain restart. The model's tools still receive structured status. Pseudo mounts, efivars, `/boot/efi`, tmpfs and snap loops are excluded.
+Only the owner is handled in #bit, its threads and DMs. Top-level #bit messages create separate threads/sessions; thread replies resume them. Guild slash commands are `/machines`, `/mood`, `/budget`, `/screen`, `/schedule`, `/reset`. `/machines` shows one line per node, such as `OZZY-AI 🟢 up 3d · CPU 8% · RAM 6/50 GB · disk 6%`; offline nodes show last-seen time (or never). Last-seen registry timestamps are in-memory and reset on brain restart. The model's tools still receive structured status. Pseudo mounts, efivars, `/boot/efi`, tmpfs and snap loops are excluded.
 
-Personality defaults to chill, with saved chill/hype/chaotic/gremlin/sage choices and sage from 22:00–04:59 in `TZ`. Owner memory lives in `bit/memory`; successful writes post `📝 noted`. Persona is read-only. Source, `.env`, `data/keys`, home Claude configuration and other paths are denied to model tools. Read/Write/Edit/Glob/Grep/Skill, WebSearch/WebFetch, the two status tools and the reminder tools are exposed. The Phase 3 web policy still governs web calls and tainted memory writes. Permission callbacks and pre-tool hooks enforce the path policy. No Bash tool is available; host-controlled Git operations below are separate from the model's tool surface.
+Personality defaults to chill, with saved chill/hype/chaotic/gremlin/sage choices and sage from 22:00–04:59 in `TZ`. Owner memory lives in `bit/memory`; successful writes post `📝 noted`. Persona is read-only. Source, `.env`, `data/keys`, home Claude configuration and other paths are denied to model tools. Read/Write/Edit/Glob/Grep/Skill, WebSearch/WebFetch, the two status tools and the reminder tools are exposed. The screenshot MCP tool is exposed only for a non-scheduled turn with an active owner grant. The Phase 3 web policy still governs web calls and tainted memory writes. Permission callbacks and pre-tool hooks enforce the path policy. No Bash tool is available; host-controlled Git operations below are separate from the model's tool surface.
 
 Skills load only from `bit/skills` through the verified project discovery alias and explicit allowlist. Bundled/user/synced skills are disabled. Skills require matching folder/name and descriptive YAML metadata; no shell preprocessing, hooks or subagents. Every skill write/edit needs the owner's Discord ✅ button. Chat text cannot authorize it. A minimal unified diff with three context lines is shown inline when short and attached in full; ❌, cancellation and ten-minute expiry deny it.
 
@@ -174,6 +174,90 @@ claim and retry with backoff. If history cannot be checked safely, the claim sta
 visible in `list_reminders()` rather than risking a duplicate mention. This relies
 on bot message-history access; deleting a delivered message before reconciliation
 can remove the evidence used for deduplication.
+
+## Read-only screenshots (Phase 5)
+
+Screen capture defaults to off. Set `SCREEN_ENABLED=true` on the **node** and
+restart it with `systemctl --user restart bit-node.service` when you want to test.
+The installation leaves it false. Darwin/Windows implementations currently
+report “not supported yet”. No mouse, keyboard, X11 or RemoteDesktop code is used.
+
+In a #bit thread or DM, use `/screen on machine:OZZY-AI` (machine is optional when
+only one online node advertises screen), then ask “what's on my screen?”. The
+owner-only grant lasts 15 minutes and applies only to that conversation/machine.
+`/screen status` shows its expiry; `/screen off` and `/reset` revoke it. Grants
+persist in `data/screens.json` and expiry is checked again at capture time.
+Scheduled jobs cannot capture. Each screenshot in a tainted conversation also
+needs an owner ✅ card showing the machine and time. Chat cannot approve it.
+
+Every successful look posts `📸 looked at <machine>'s screen`. Images stay out of
+Discord unless that same owner message explicitly requests an attachment, e.g.
+“Please attach the screenshot” or “Can you send me the screenshot?”. One scaled
+image is attached per requested run. Image requests inside quoted/page text are
+not authorization. bIT describes visible facts and unclear text, and does not
+repeat sensitive-looking passwords, tokens, keys or card numbers.
+
+The node rechecks its graphical session/portal every 15 seconds and updates its
+advertised capabilities over the existing encrypted application protocol. Before
+Wayland login, on logout, when locked, or with a missing portal it exposes only
+status. It reads the session variables from `systemctl --user show-environment`
+each time, so the lingering service does not depend on its startup environment.
+If a custom login setup does not import them automatically, run this **from the
+logged-in Wayland desktop**; the next node probe will see the change:
+
+```bash
+systemctl --user import-environment WAYLAND_DISPLAY DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR XDG_SESSION_TYPE XDG_CURRENT_DESKTOP
+```
+
+Linux uses `/usr/bin/python3` with PyGObject/Gio and the standard Screenshot
+portal. This Ubuntu host already has Python GI 3.56.2, GNOME Shell 50.1,
+xdg-desktop-portal 1.21.1 and its GNOME 50.0 backend. A read-only probe confirmed
+Screenshot interface version 2, the Wayland portal and monitor layout were
+reachable; no real Screenshot request was made during installation.
+
+The installer adds `com.ozzy.bit-node.desktop` (display name **bIT**, hidden from
+app menus). The helper registers that identity before portal calls, as required
+by the [host Registry API](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.host.portal.Registry.html).
+This avoids unnamed host apps sharing a screenshot permission. With permissions
+unset, the matching [portal 1.21.1 source](https://github.com/flatpak/xdg-desktop-portal/blob/1.21.1/src/screenshot.c)
+shows an “Allow bIT to Take Screenshots?” consent and stores the Allow/Deny choice.
+Allow is reused on later requests; an “ask” permission instead prompts each time.
+You can change the permission in GNOME privacy settings.
+
+The [GNOME 50 backend](https://github.com/GNOME/xdg-desktop-portal-gnome/blob/50.0/src/screenshotdialog.c)
+skips the preview/share dialog once the front portal has checked permission.
+**Expected on this installed version:** first consent, then unattended
+non-interactive screenshots until permission is revoked. Each capture requests
+“bIT took a screenshot” through portal notifications, with notify-send fallback;
+GNOME's notification/DND settings control banner visibility. This consent-frequency
+conclusion is from matching source versions; you will verify the actual UI in the
+live test. Screenshot supports the requested unattended behavior here, so no
+ScreenCast session, continuous stream, persist_mode or restore-token fallback
+is needed. Denial never causes a switch to a different capture mechanism.
+
+The [Screenshot API](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.Screenshot.html)
+returns a file URI. For this host app the front portal returns the original GNOME
+file. The helper opens it without following symlinks, checks ownership/type,
+**unlinks it immediately before reading**, and closes the descriptor in finally.
+GNOME briefly creates that portal-owned PNG; bIT creates no image files. A crash
+before receiving/opening the URI can leave GNOME's file; normal cleanup and
+oversize-failure cleanup are covered by tests. There are no saved bIT captures.
+
+The image loader sets the [libvips disk threshold](https://www.libvips.org/API/8.17/func.get_disc_threshold.html) above the bounded decoded capture size before native initialization and disables its open-file cache.
+Sharp downsizes in memory to a 1568-pixel long edge without upscaling, retaining
+aspect ratio. It picks the smaller of JPEG quality 80 and PNG, with a 2 MiB limit
+that fits the existing 8 MiB encrypted frame limit. The model receives original
+and scaled pixel dimensions, logical monitor layout and UTC capture timestamp.
+Audits contain metadata/decisions/grant and approval ids, never pixels. Daily
+attempts are reserved before capture (failures count conservatively), default
+`BIT_DAILY_SCREEN_CAP=40`; `/budget` includes the count.
+
+Screenshot-enabled model turns use fresh **non-persistent SDK sessions** and
+skip prompt history, including the SDK's MCP image-file cache. They do not resume
+or save image-bearing transcripts. A real SDK test against a local fake API with
+a synthetic image verifies no pixel bytes/files are saved. Follow-up screenshots
+require another capture; the ordinary pre-screen conversation remains resumable
+after the grant is off. See [PHASE5-PROOF.md](PHASE5-PROOF.md).
 
 ## Budget, diagnostics and validation
 

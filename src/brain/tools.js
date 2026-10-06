@@ -25,3 +25,8 @@ export function reminderTools(reminders, { channel, notify = async () => {} }) {
     tool('cancel_reminder', 'Cancel a pending owner reminder by id.', { id: z.string().uuid() }, guarded(({ id }) => reminders.cancel(id))),
   ] });
 }
+export function screenshotTools(screen) {
+  return createSdkMcpServer({ name: 'screens', version: '1.0.0', tools: [
+    tool('screenshot', 'Read-only screenshot of a machine with screen capability. Requires an active owner /screen on grant in this conversation; never available for scheduled jobs. Describe visible facts; do not repeat passwords, tokens, keys or card numbers. Report unclear text honestly.', { machine: z.string().min(1).max(64) }, ({ machine }) => screen.capture(machine)),
+  ] });
+}

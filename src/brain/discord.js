@@ -28,6 +28,10 @@ export function commands() {
     new SlashCommandBuilder().setName('mood').setDescription('Set bIT’s daytime personality').addStringOption(o => o.setName('personality').setDescription('Voice').setRequired(true).addChoices(...['chill', 'hype', 'chaotic', 'gremlin', 'sage'].map(name => ({ name, value: name })))),
     new SlashCommandBuilder().setName('machines').setDescription('Show machines and live status'),
     new SlashCommandBuilder().setName('budget').setDescription('Show this month’s juice meter'),
+    new SlashCommandBuilder().setName('screen').setDescription('Grant read-only screen access in this conversation')
+      .addSubcommand(s => s.setName('on').setDescription('Grant 15 minutes of read-only capture').addStringOption(o => o.setName('machine').setDescription('Machine name (optional if just one has screen)')))
+      .addSubcommand(s => s.setName('off').setDescription('Revoke this conversation’s screen grant'))
+      .addSubcommand(s => s.setName('status').setDescription('Show this conversation’s screen grant')),
     new SlashCommandBuilder().setName('schedule').setDescription('Manage bIT scheduled jobs')
       .addSubcommand(s => s.setName('list').setDescription('List jobs and next run times'))
       .addSubcommand(s => s.setName('pause').setDescription('Pause a job').addStringOption(o => o.setName('name').setDescription('Schedule name').setRequired(true)))
@@ -38,9 +42,9 @@ export function commands() {
 }
 export class ApprovalRelay {
   constructor(owner, { timeout = 600000 } = {}) { this.owner = owner; this.timeout = timeout; this.pending = new Map(); }
-  async request(channel, { tool, file, url, action, description, input, diff, signal }) {
+  async request(channel, { tool, file, url, action, description, input, diff, signal, approvalId }) {
     if (signal?.aborted) return false;
-    const id = randomUUID();
+    const id = approvalId || randomUUID();
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`approve:${id}:yes`).setLabel('✅ Approve').setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId(`approve:${id}:no`).setLabel('❌ Deny').setStyle(ButtonStyle.Danger));
@@ -89,7 +93,7 @@ export async function machinesText(hub, onError = () => {}) {
   const machines = hub.list(); if (!machines.length) return 'No machines registered yet. My ring is listening.';
   return (await Promise.all(machines.map(async machine => {
     if (!machine.online) return `${machine.machine} ⚫ offline · last seen ${machine.lastSeen ? new Date(machine.lastSeen).toISOString() : 'never'}`;
-    try { return machineLine(machine.machine, await hub.request(machine.machine, 'status')); }
+    try { return machineLine(machine.machine, await hub.request(machine.machine, 'status')) + (machine.capabilities?.includes('screen') ? ' · screen available' : ''); }
     catch (e) { onError(e, { machine: machine.machine }); return `${machine.machine} 🟡 my status sensor hit a snag. Try again in a moment, Ozzy.`; }
   }))).join('\n');
 }
@@ -144,7 +148,7 @@ export function createDiscord({ runner, hub, budget, scheduler, reminders, env =
       const fresh = channel.id === bitChannel && !channel.isThread();
       if (fresh) channel = await message.startThread({ name: `bIT · ${message.content.slice(0, 70).replace(/\s+/g, ' ')}`, autoArchiveDuration: 1440 });
       await channel.sendTyping();
-      const response = await runner.run(channel.id, message.content, { fresh, notify: text => sendText(channel, text), approve: request => approvals.request(channel, request) });
+      const response = await runner.run(channel.id, message.content, { fresh, notify: text => sendText(channel, text), approve: request => approvals.request(channel, request), publish: ({ buffer, mimeType }) => channel.send({ files: [{ attachment: buffer, name: mimeType === 'image/png' ? 'screenshot.png' : 'screenshot.jpg' }], allowedMentions: { parse: [] } }) });
       await sendText(channel, response);
     } catch (e) { fail(e); await sendText(channel, 'My ring hit a snag. Check the brain console, Ozzy.').catch(fail); }
   });
@@ -174,10 +178,26 @@ export function createDiscord({ runner, hub, budget, scheduler, reminders, env =
         }
         case 'budget': {
           const w = runner.web?.status();
+          const screens = runner.screens?.status();
           const s = budget.status(); response = `Juice meter · ${s.month}: $${s.spent.toFixed(4)} / $${s.cap.toFixed(2)}${s.uncertain ? ' — reconciliation needed after an interrupted run' : ''}`; if (w) {
             response += `\nWeb today: ${w.daily.search}/${w.searchCap} searches · ${w.daily.fetch}/${w.fetchCap} fetches (search fees included in spend).\nWeb this month: ${w.monthly.search} searches · ${w.monthly.fetch} fetches.`;
             if (w.estimatedSearchUSD > 0) response += `\nIncludes $${w.estimatedSearchUSD.toFixed(2)} estimated fees for searches not yet reported by the SDK.`;
-          } break;
+          } if (screens) response += `\nScreens today: ${screens.captures}/${screens.cap} captures.`; break;
+        }
+        case 'screen': {
+          if (!runner.screens) throw new Error('Screen grants unavailable');
+          const action = interaction.options.getSubcommand();
+          if (action === 'status') response = runner.screens.describe(channel.id);
+          else if (action === 'off') { runner.screens.off(channel.id); response = 'Screen access revoked for this conversation, Ozzy.'; }
+          else if (!channel.isThread() && !channel.isDMBased()) response = 'Use /screen on inside a #bit thread or DM, Ozzy. Grants stay in that conversation.';
+          else {
+            const requested = interaction.options.getString('machine');
+            const available = hub.list().filter(n => n.online && n.capabilities?.includes('screen'));
+            const machine = requested ? available.find(n => n.machine.toLowerCase() === requested.toLowerCase()) : available.length === 1 ? available[0] : null;
+            if (!machine) response = available.length ? `Choose a machine with /screen on machine:<name>: ${available.map(n => n.machine).join(', ')}` : 'No machine advertises screen right now, Ozzy. SCREEN_ENABLED and a reachable Wayland session are required.';
+            else { runner.screens.on(channel.id, machine.machine); response = `${runner.screens.describe(channel.id)} Read-only; no mouse or keyboard control.`; }
+          }
+          break;
         }
         case 'schedule': {
           if (!scheduler) throw new Error('Scheduler unavailable');
@@ -266,5 +286,5 @@ export function createDiscord({ runner, hub, budget, scheduler, reminders, env =
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href && process.argv.includes('--register')) {
   required(process.env, ['DISCORD_TOKEN', 'DISCORD_APP_ID', 'DISCORD_GUILD_ID']);
   await new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN).put(Routes.applicationGuildCommands(process.env.DISCORD_APP_ID, process.env.DISCORD_GUILD_ID), { body: commands() });
-  console.log('Registered /mood, /machines, /budget, /schedule and /reset in the configured guild.');
+  console.log('Registered /mood, /machines, /budget, /screen, /schedule and /reset in the configured guild.');
 }

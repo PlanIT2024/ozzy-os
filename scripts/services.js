@@ -10,8 +10,12 @@ if (process.platform === 'linux') {
   if (ROOT !== path.join(os.homedir(), 'ozzy-os')) throw new Error('User units require checkout at ~/ozzy-os');
   const units = nodeOnly ? ['bit-node.service'] : ['bit-brain.service', 'bit-node.service'];
   const directory = path.join(os.homedir(), '.config/systemd/user');
+  const desktopDirectory = path.join(os.homedir(), '.local/share/applications');
+  const desktopFile = path.join(desktopDirectory, 'com.ozzy.bit-node.desktop');
   if (action === 'install') {
     fs.mkdirSync(directory, { recursive: true });
+    fs.mkdirSync(desktopDirectory, { recursive: true });
+    fs.writeFileSync(desktopFile, fs.readFileSync(path.join(ROOT, 'deploy/desktop/com.ozzy.bit-node.desktop'), 'utf8').replace('__NODE__', process.execPath).replace('__ROOT__', ROOT));
     for (const unit of units) {
       let content = fs.readFileSync(path.join(ROOT, 'deploy/systemd', unit), 'utf8').replace('/usr/bin/node', `"${process.execPath.replaceAll('%', '%%')}"`);
       if (nodeOnly) content = content.replace('After=bit-brain.service\nWants=bit-brain.service\n', 'After=network-online.target\nWants=network-online.target\n');
@@ -20,6 +24,7 @@ if (process.platform === 'linux') {
     run('systemctl', ['--user', 'daemon-reload']); run('systemctl', ['--user', 'reset-failed', ...units], true); run('systemctl', ['--user', 'enable', ...units]); run('systemctl', ['--user', 'restart', ...units]);
   } else if (action === 'uninstall') {
     run('systemctl', ['--user', 'disable', '--now', ...units], true);
+    fs.rmSync(desktopFile, { force: true });
     for (const unit of units) fs.rmSync(path.join(directory, unit), { force: true });
     run('systemctl', ['--user', 'daemon-reload']);
   } else if (action === 'status') run('systemctl', ['--user', 'status', ...units, '--no-pager']);
