@@ -13,10 +13,10 @@ export class Growth {
   }
   git(args) { return this.run(['-c', 'core.hooksPath=' + path.join(this.root, 'data/empty-hooks'), ...args], { cwd: this.root, timeout: 30000, maxBuffer: 1024 * 1024 }); }
   validate(folder) {
-    if (folder !== 'bit/memory' && !/^bit\/skills\/[a-z0-9_-]+$/i.test(folder)) throw new Error('Auto-commit path denied');
+    if (folder !== 'bit/memory' && !/^bit\/skills\/[a-z0-9_-]+$/i.test(folder) && !/^bit\/schedules\/[a-z0-9][a-z0-9_-]{0,63}\.md$/.test(folder)) throw new Error('Auto-commit path denied');
     let current = this.root;
     for (const part of folder.split('/')) { current = path.join(current, part); if (fs.lstatSync(current).isSymbolicLink()) throw new Error('Auto-commit symlink denied'); }
-    const walk = dir => { for (const item of fs.readdirSync(dir, { withFileTypes: true })) { if (item.isSymbolicLink() || item.name === '.git') throw new Error('Auto-commit symlink/nested repo denied'); if (item.isFile() && fs.statSync(path.join(dir, item.name)).nlink > 1) throw new Error('Auto-commit hard link denied'); if (item.isDirectory()) walk(path.join(dir, item.name)); } }; walk(current);
+    const walk = dir => { for (const item of fs.readdirSync(dir, { withFileTypes: true })) { if (item.isSymbolicLink() || item.name === '.git') throw new Error('Auto-commit symlink/nested repo denied'); if (item.isFile() && fs.statSync(path.join(dir, item.name)).nlink > 1) throw new Error('Auto-commit hard link denied'); if (item.isDirectory()) walk(path.join(dir, item.name)); } }; if (fs.statSync(current).isDirectory()) walk(current); else if (fs.statSync(current).nlink > 1) throw new Error('Auto-commit hard link denied');
   }
   report(error) { this.log('bIT growth commit/push failed:', error.message); try { fs.appendFileSync(path.join(this.root, 'data/audit.log'), JSON.stringify({ time: new Date().toISOString(), event: 'growth_error', error: error.message }) + '\n', { mode: 0o600 }); } catch {} }
   async commit(folder, message) {
@@ -33,12 +33,13 @@ export class Growth {
     const relative = path.relative(this.root, path.resolve(this.root, file)).split(path.sep).join('/');
     if (relative.startsWith('bit/memory/')) return Promise.resolve(); // Timer batches these changes.
     const match = /^bit\/skills\/([a-z0-9_-]+)\//i.exec(relative);
-    if (!match) return Promise.resolve();
+    const schedule = /^bit\/schedules\/([a-z0-9][a-z0-9_-]{0,63})\.md$/.exec(relative);
+    if (!match && !schedule) return Promise.resolve();
     return this.queue(async () => {
       try {
-        const folder = `bit/skills/${match[1]}`; this.validate(folder);
+        const folder = schedule ? relative : `bit/skills/${match[1]}`; this.validate(folder);
         let exists = false; try { await this.git(['cat-file', '-e', `HEAD:${folder}`]); exists = true; } catch (error) { if (error.code !== 128) throw error; }
-        const message = `bIT: ${exists ? 'update' : 'add'} skill ${match[1]}`;
+        const message = `bIT: ${exists ? 'update' : 'add'} ${schedule ? 'schedule' : 'skill'} ${(schedule || match)[1]}`;
         if (await this.commit(folder, message)) await this.notify(`🧠 ${message}`);
       } catch (error) { this.report(error); }
     });

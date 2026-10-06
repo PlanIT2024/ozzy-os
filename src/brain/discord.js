@@ -1,4 +1,5 @@
 import { retryNetwork, temporary } from '../networkRetry.js';
+import { zonedTime } from './scheduler.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { inspect } from 'node:util';
@@ -16,7 +17,9 @@ export function splitMessage(text, limit = 2000) {
   if (text) chunks.push(text); return chunks;
 }
 export async function sendText(channel, text) {
-  for (const content of splitMessage(text)) await channel.send({ content, flags: MessageFlags.SuppressEmbeds, allowedMentions: { parse: [] } });
+  const sent = [];
+  for (const content of splitMessage(text)) sent.push(await channel.send({ content, flags: MessageFlags.SuppressEmbeds, allowedMentions: { parse: [] } }));
+  return sent;
 }
 export function allowedLocation(channel, bitChannel) { return Boolean(channel && (channel.isDMBased() || channel.id === bitChannel || (channel.isThread() && channel.parentId === bitChannel))); }
 export function acceptsMessage(message, owner, bitChannel) { return !message.author.bot && message.author.id === owner && allowedLocation(message.channel, bitChannel); }
@@ -25,6 +28,11 @@ export function commands() {
     new SlashCommandBuilder().setName('mood').setDescription('Set bIT’s daytime personality').addStringOption(o => o.setName('personality').setDescription('Voice').setRequired(true).addChoices(...['chill', 'hype', 'chaotic', 'gremlin', 'sage'].map(name => ({ name, value: name })))),
     new SlashCommandBuilder().setName('machines').setDescription('Show machines and live status'),
     new SlashCommandBuilder().setName('budget').setDescription('Show this month’s juice meter'),
+    new SlashCommandBuilder().setName('schedule').setDescription('Manage bIT scheduled jobs')
+      .addSubcommand(s => s.setName('list').setDescription('List jobs and next run times'))
+      .addSubcommand(s => s.setName('pause').setDescription('Pause a job').addStringOption(o => o.setName('name').setDescription('Schedule name').setRequired(true)))
+      .addSubcommand(s => s.setName('resume').setDescription('Resume a job').addStringOption(o => o.setName('name').setDescription('Schedule name').setRequired(true)))
+      .addSubcommand(s => s.setName('run').setDescription('Run a job now in a new thread').addStringOption(o => o.setName('name').setDescription('Schedule name').setRequired(true))),
     new SlashCommandBuilder().setName('reset').setDescription('Start a fresh session in this thread or DM'),
   ].map(c => c.toJSON());
 }
@@ -40,7 +48,8 @@ export class ApprovalRelay {
     const review = diff || JSON.stringify({ tool, file, ...input }, null, 2);
     const target = url || file;
     const label = target?.length > 1700 ? 'Full URL in proposed-operation.json (including query string)' : target;
-    const message = await channel.send({ flags: MessageFlags.SuppressEmbeds, content: `This needs your say-so, Ozzy: ${tool} ${label}\nExpires in 10 minutes.`, files: [{ attachment: Buffer.from(review), name: diff ? 'proposed-change.diff' : 'proposed-operation.json' }], components: [row], allowedMentions: { parse: [] } });
+    const preview = diff && diff.length <= 1400 && !diff.includes('```') ? `\n\`\`\`diff\n${diff}\n\`\`\`` : '';
+    const message = await channel.send({ flags: MessageFlags.SuppressEmbeds, content: `This needs your say-so, Ozzy: ${tool} ${label}\nExpires in 10 minutes.${preview}`, files: [{ attachment: Buffer.from(review), name: diff ? 'proposed-change.diff' : 'proposed-operation.json' }], components: [row], allowedMentions: { parse: [] } });
     return new Promise(resolve => {
       let done = false;
       const finish = async (allowed, reason) => {
@@ -84,7 +93,7 @@ export async function machinesText(hub, onError = () => {}) {
     catch (e) { onError(e, { machine: machine.machine }); return `${machine.machine} 🟡 my status sensor hit a snag. Try again in a moment, Ozzy.`; }
   }))).join('\n');
 }
-export function createDiscord({ runner, hub, budget, env = process.env, auditFile = path.join(ROOT, 'data/audit.log'), client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.DirectMessages], partials: [Partials.Channel] }) }) {
+export function createDiscord({ runner, hub, budget, scheduler, reminders, env = process.env, auditFile = path.join(ROOT, 'data/audit.log'), client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.DirectMessages], partials: [Partials.Channel] }) }) {
   const owner = env.OWNER_DISCORD_ID, bitChannel = env.BIT_CHANNEL_ID;
   const approvals = new ApprovalRelay(owner);
   const fail = (error, context = {}) => {
@@ -164,7 +173,24 @@ export function createDiscord({ runner, hub, budget, env = process.env, auditFil
         }
         case 'budget': {
           const w = runner.web?.status();
-          const s = budget.status(); response = `Juice meter · ${s.month}: $${s.spent.toFixed(4)} / $${s.cap.toFixed(2)}${s.uncertain ? ' — reconciliation needed after an interrupted run' : ''}`; if (w) response += `\nWeb today: ${w.daily.search}/${w.searchCap} searches · ${w.daily.fetch}/${w.fetchCap} fetches; month: ${w.monthly.search} searches · ${w.monthly.fetch} fetches. Unreported search surcharge estimate: $${w.estimatedSearchUSD.toFixed(2)} separately (included in juice meter; SDK reports ${w.sdkSearches} searches with fees).`; break;
+          const s = budget.status(); response = `Juice meter · ${s.month}: $${s.spent.toFixed(4)} / $${s.cap.toFixed(2)}${s.uncertain ? ' — reconciliation needed after an interrupted run' : ''}`; if (w) {
+            response += `\nWeb today: ${w.daily.search}/${w.searchCap} searches · ${w.daily.fetch}/${w.fetchCap} fetches (search fees included in spend).\nWeb this month: ${w.monthly.search} searches · ${w.monthly.fetch} fetches.`;
+            if (w.estimatedSearchUSD > 0) response += `\nIncludes $${w.estimatedSearchUSD.toFixed(2)} estimated fees for searches not yet reported by the SDK.`;
+          } break;
+        }
+        case 'schedule': {
+          if (!scheduler) throw new Error('Scheduler unavailable');
+          const action = interaction.options.getSubcommand();
+          if (action === 'list') response = scheduler.describe();
+          else {
+            const name = interaction.options.getString('name', true);
+            try {
+              if (action === 'pause' || action === 'resume') response = await scheduler.pause(name, action === 'pause');
+              else if (action === 'run') { const result = await scheduler.runNow(name); response = result?.threadId ? `Posted ${name}: <#${result.threadId}>` : `Handled ${name}, Ozzy.`; }
+              else response = 'Unknown schedule action.';
+            } catch (error) { response = error.message; }
+          }
+          break;
         }
         case 'machines': response = await machinesText(hub, (error, details) => fail(error, { ...context, ...details })); break;
         case 'reset':
@@ -184,13 +210,60 @@ export function createDiscord({ runner, hub, budget, env = process.env, auditFil
       } catch (replyError) { fail(replyError, { ...context, stage: 'error_reply' }); }
     }
   });
-  return { client, approvals, failure, async notifyGrowth(text) { const channel = await client.channels.fetch(bitChannel); await sendText(channel, text); }, async start() {
-    try { await Promise.race([reconnect(), failure]); }
+  return { client, approvals, failure,
+    async runScheduled(job, { due, misses, timezone, webAllowed }) {
+      const base = await client.channels.fetch(bitChannel);
+      const balance = budget.status();
+      if (balance.uncertain || balance.remaining <= 0) {
+        await sendText(base, `My ring is out of scheduled-job juice, Ozzy. Skipping ${job.name}${balance.uncertain ? ' until the budget is reconciled' : ' until next month'}.`);
+        return { skipped: 'budget' };
+      }
+      const date = new Intl.DateTimeFormat('en-CA', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(due);
+      const thread = await base.threads.create({ name: `${job.name} · ${date}`, autoArchiveDuration: 1440 });
+      if (misses.length) await sendText(thread, `⏭ ${misses.join('\n')}`);
+      const context = `Job: ${job.name}. Due: ${zonedTime(due, timezone)} (${timezone}). Current date/time: ${zonedTime(new Date(), timezone)}.\n${job.instructions}`;
+      const response = await runner.run(thread.id, context, { fresh: true, scheduled: true, webAllowed, notify: text => sendText(thread, text), approve: request => approvals.request(thread, request) });
+      const messages = await sendText(thread, response);
+      return { threadId: thread.id, threadName: thread.name, messageIds: messages.map(m => m?.id) };
+    },
+    async deliverReminder(reminder, { late, recover = false, route = () => {} }) {
+      let target = await client.channels.fetch(bitChannel);
+      const originalId = reminder.deliveryChannel || reminder.channel;
+      if (originalId && originalId !== bitChannel) {
+        try {
+          const original = await client.channels.fetch(originalId);
+          if (original?.isThread() && original.parentId === bitChannel) {
+            if (original.archived) await original.setArchived(false);
+            target = original;
+          }
+        } catch (error) { if (!(recover ? [10003, 10008] : [10003, 10008, 50001, 50013]).includes(error.code)) throw error; }
+      }
+      if (recover) {
+        // A crash may occur after Discord accepted the message but before saving its id.
+        // Reconcile that window using the persisted id marker, rather than replaying blindly.
+        let before;
+        for (let page = 0; page < 250; page++) {
+          const messages = await target.messages.fetch({ limit: 100, ...(before ? { before } : {}) });
+          const ordered = [...messages.values()];
+          const existing = ordered.find(m => m.author.id === client.user.id && m.content.endsWith(`· reminder ${reminder.id}`));
+          if (existing) return existing;
+          const oldest = ordered.reduce((a,b) => !a || b.createdTimestamp < a.createdTimestamp ? b : a, null);
+          if (messages.size < 100 || !oldest || oldest.createdTimestamp < +new Date(reminder.claimedAt) - 60000) break;
+          if (page === 249) throw new Error('Reminder history reconciliation limit reached; keeping claim for owner review.');
+          before = oldest.id;
+        }
+      }
+      route(target.id);
+      return target.send({ content: `⏰ <@${owner}> ${late ? '(late) ' : ''}${reminder.text}\nDue: ${zonedTime(new Date(reminder.due), reminders?.timezone)} · reminder ${reminder.id}`, flags: MessageFlags.SuppressEmbeds, allowedMentions: { parse: [], users: [owner] }, nonce: reminder.id.replaceAll('-', '').slice(0, 24), enforceNonce: true });
+    },
+    async notifyGrowth(text) { const channel = await client.channels.fetch(bitChannel); await sendText(channel, text); }, async start() {
+    try { await Promise.race([reconnect(), failure]);
+      if (typeof client.isReady === 'function' && !client.isReady()) await Promise.race([new Promise(resolve => client.once(Events.ClientReady, resolve)), failure]); }
     catch (error) { fatal(error, 'login'); throw error; }
   }, close() { closed = true; approvals.close(); client.destroy(); } };
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href && process.argv.includes('--register')) {
   required(process.env, ['DISCORD_TOKEN', 'DISCORD_APP_ID', 'DISCORD_GUILD_ID']);
   await new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN).put(Routes.applicationGuildCommands(process.env.DISCORD_APP_ID, process.env.DISCORD_GUILD_ID), { body: commands() });
-  console.log('Registered /mood, /machines, /budget and /reset in the configured guild.');
+  console.log('Registered /mood, /machines, /budget, /schedule and /reset in the configured guild.');
 }

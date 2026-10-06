@@ -123,20 +123,62 @@ References: [libsodium key exchange](https://libsodium.gitbook.io/doc/key_exchan
 
 ## Discord, memory, skills and growth commits
 
-Only the owner is handled in #bit, its threads and DMs. Top-level #bit messages create separate threads/sessions; thread replies resume them. Guild slash commands are `/machines`, `/mood`, `/budget`, `/reset`. `/machines` shows one line per node, such as `OZZY-AI 🟢 up 3d · CPU 8% · RAM 6/50 GB · disk 6%`; offline nodes show last-seen time (or never). Last-seen registry timestamps are in-memory and reset on brain restart. The model's tools still receive structured status. Pseudo mounts, efivars, `/boot/efi`, tmpfs and snap loops are excluded.
+Only the owner is handled in #bit, its threads and DMs. Top-level #bit messages create separate threads/sessions; thread replies resume them. Guild slash commands are `/machines`, `/mood`, `/budget`, `/schedule`, `/reset`. `/machines` shows one line per node, such as `OZZY-AI 🟢 up 3d · CPU 8% · RAM 6/50 GB · disk 6%`; offline nodes show last-seen time (or never). Last-seen registry timestamps are in-memory and reset on brain restart. The model's tools still receive structured status. Pseudo mounts, efivars, `/boot/efi`, tmpfs and snap loops are excluded.
 
-Personality defaults to chill, with saved chill/hype/chaotic/gremlin/sage choices and sage from 22:00–04:59 in `TZ`. Owner memory lives in `bit/memory`; successful writes post `📝 noted`. Persona is read-only. Source, `.env`, `data/keys`, home Claude configuration and other paths are denied to model tools. Only Read/Write/Edit/Glob/Grep/Skill and the two status tools are exposed. Permission callbacks and pre-tool hooks enforce the path policy. No Bash tool is available; host-controlled Git operations below are separate from the model's tool surface.
+Personality defaults to chill, with saved chill/hype/chaotic/gremlin/sage choices and sage from 22:00–04:59 in `TZ`. Owner memory lives in `bit/memory`; successful writes post `📝 noted`. Persona is read-only. Source, `.env`, `data/keys`, home Claude configuration and other paths are denied to model tools. Read/Write/Edit/Glob/Grep/Skill, WebSearch/WebFetch, the two status tools and the reminder tools are exposed. The Phase 3 web policy still governs web calls and tainted memory writes. Permission callbacks and pre-tool hooks enforce the path policy. No Bash tool is available; host-controlled Git operations below are separate from the model's tool surface.
 
-Skills load only from `bit/skills` through the verified project discovery alias and explicit allowlist. Bundled/user/synced skills are disabled. Skills require matching folder/name and descriptive YAML metadata; no shell preprocessing, hooks or subagents. Every skill write/edit needs the owner's Discord ✅ button. Chat text cannot authorize it. The complete proposal is attached; ❌, cancellation and ten-minute expiry deny it.
+Skills load only from `bit/skills` through the verified project discovery alias and explicit allowlist. Bundled/user/synced skills are disabled. Skills require matching folder/name and descriptive YAML metadata; no shell preprocessing, hooks or subagents. Every skill write/edit needs the owner's Discord ✅ button. Chat text cannot authorize it. A minimal unified diff with three context lines is shown inline when short and attached in full; ❌, cancellation and ten-minute expiry deny it.
 
 After each successful approved skill write, the host stages **only that skill folder**, commits `bIT: add skill <name>` or `bIT: update skill <name>`, and posts a one-line note in #bit. Multi-file skills may produce multiple commits as each approved write completes. Memory changes are collected at most once per hour into `bIT: memory notes <UTC-date>`, with the last batch time persisted across restarts. Existing/manual changes within an included folder join its next batch; review personal memory before enabling remote pushes.
 
-Growth commits use `git commit --only -- <allowed-folder>` so unrelated changes already staged in your index do not enter the commit. Only `bit/memory/**` and `bit/skills/<name>/**` are staged; symlinks and nested repositories are rejected. Configure local `git user.name` and `git user.email` if missing. Repository Git hooks are disabled for automatic commits. No automatic push occurs unless `AUTO_PUSH=true`; Git/push failures are logged to console and `data/audit.log` without crashing the brain. Auto-push requires a configured upstream and suitable Git credentials; push errors do not undo local commits.
+Growth commits use `git commit --only -- <allowed-folder>` so unrelated changes already staged in your index do not enter the commit. Only `bit/memory/**`, `bit/skills/<name>/**` and individual approved `bit/schedules/<name>.md` files are staged; symlinks and nested repositories are rejected. Configure local `git user.name` and `git user.email` if missing. Repository Git hooks are disabled for automatic commits. No automatic push occurs unless `AUTO_PUSH=true`; Git/push failures are logged to console and `data/audit.log` without crashing the brain. Auto-push requires a configured upstream and suitable Git credentials; push errors do not undo local commits.
+
+## Schedules and reminders
+
+The brain reads `bit/schedules/<name>.md`. Each file has YAML frontmatter with
+`name` (matching its filename), a quoted five-field `cron`, `enabled: true|false`,
+and `channel: bit`, followed by the job instructions. Every schedule write/edit
+needs the owner's ✅ button; approved changes commit as `bIT: add|update schedule
+<name>`. Prefer Edit for existing files. The seeded jobs are `daily-brief` at 08:00
+weekdays and `weekly-review` at 18:00 Sundays, in `.env`'s `TZ`.
+
+Use `/schedule list`, `/schedule pause name:<name>`, `/schedule resume name:<name>`
+and `/schedule run name:<name>`. Pause/resume live only in `data/scheduler.json`;
+resuming a file with `enabled: false` requires an approved file edit first.
+Paused/disabled jobs cannot run manually. Each run creates a dated thread in
+#bit, checks budget and starts a fresh untainted SDK session. Web tools are off
+unless a line in the approved body explicitly says `Use WebSearch ...` or
+`Use WebFetch ...` (also `Call`/`Invoke`). Then the existing web rules and taint
+tracking apply. A skill mentioning web access does not enable it for a job.
+
+Startup catches up the latest missed occurrence within two hours. Older missed
+runs are skipped and mentioned in the next brief; pause time does not accumulate
+catch-ups. Claims are saved before running so an interrupted job is never
+replayed. Repeated fall-back wall-clock slots run once, at the first occurrence;
+a nonexistent spring-forward cron time follows cron-parser's DST shift behavior.
+Manual runs are explicit additional runs and do not consume a future cron slot.
+
+Ask bIT “remind me in 20 minutes to stretch” or “remind me tomorrow at 3pm to call”.
+`set_reminder(when, text)` resolves in `TZ`, returns the exact local timestamp and
+id, and sends ⏰. `list_reminders()` and `cancel_reminder(id)` manage pending
+reminders in gitignored `data/reminders.json`. Setting one after web results
+requires ✅, showing the exact resolved time and text. Ambiguous fall-back times
+need an explicit ISO offset; nonexistent local times are rejected.
+
+Reminders mention only the owner. They go to the original #bit thread (unarchived
+if needed), or #bit if the original is gone/inaccessible or was a DM. Overdue
+reminders are sent on startup, marked late. Delivery claims survive crashes;
+recovery checks the destination's message history for the reminder id before
+retrying, and also uses Discord nonce deduplication. Network failures retain the
+claim and retry with backoff. If history cannot be checked safely, the claim stays
+visible in `list_reminders()` rather than risking a duplicate mention. This relies
+on bot message-history access; deleting a delivered message before reconciliation
+can remove the evidence used for deduplication.
 
 ## Budget, diagnostics and validation
 
 Monthly cost comes from SDK result messages. Runs serialize; cumulative resumed-session costs are charged only once. `BIT_MONTHLY_CAP_USD` gates new calls and sets the SDK's remaining-run budget. An in-flight response can exceed the cap. Unknown spend after an interrupted API run fails closed; reconcile `data/budget.json` before clearing its `uncertain` flag. `TZ` defines month boundaries. Machine status and slash commands need no API spend.
 
-Discord logs its ready tag and incoming filter decisions. Login/fatal gateway errors log full diagnostics and exit nonzero; disallowed intents include a Developer Portal hint. Node authentication rejections explain which pairing/token settings to inspect. Relay logs never include payloads. `data/` contains personal transcripts, audit/budget/session state and keys; keep it private and backed up. `.env` and all runtime data are gitignored. Memory/skills themselves are tracked growth artifacts.
+Discord logs its ready tag and incoming filter decisions. Login/fatal gateway errors log full diagnostics and exit nonzero; disallowed intents include a Developer Portal hint. Node authentication rejections explain which pairing/token settings to inspect. Relay logs never include payloads. `data/` contains personal transcripts, audit/budget/session state and keys; keep it private and backed up. `.env` and all runtime data are gitignored. Memory, skills and schedules themselves are tracked growth artifacts.
 
-Run `npm test` for the complete suite. [PHASE2-PROOF.md](PHASE2-PROOF.md) records tests, service/relay proofs, and remaining manual checks. [PROOF.md](PROOF.md) preserves Phase 1 history.
+Run `npm test` for the complete suite. [PHASE4-PROOF.md](PHASE4-PROOF.md) records scheduling/reminder validation and the live brief. [PHASE2-PROOF.md](PHASE2-PROOF.md) records tests, service/relay proofs, and remaining manual checks. [PROOF.md](PROOF.md) preserves Phase 1 history.

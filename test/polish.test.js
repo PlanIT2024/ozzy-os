@@ -60,7 +60,7 @@ test('home Claude writes and alternate nested discovery directories denied', asy
   assert.throws(() => skillOptions(root), /Unexpected project Claude configuration/);
 });
 
-for (const area of ['skill', 'tainted memory']) test(`owner chat cannot approve pending ${area} write; only owner affirmative button can`, async t => {
+for (const area of ['skill', 'tainted memory', 'schedule']) test(`owner chat cannot approve pending ${area} write; only owner affirmative button can`, async t => {
   const root = fixture(t), c = client(), messages = [];
   const channel = { id: 'thread', parentId: 'bit', isDMBased: () => false, isThread: () => true, sendTyping: async () => {},
     send: async payload => { messages.push(payload); return { id: 'proposal', edit: async () => {} }; } };
@@ -69,7 +69,7 @@ for (const area of ['skill', 'tainted memory']) test(`owner chat cannot approve 
   const web = new WebLedger({ root }); if (area === 'tainted memory') web.result('s', 'WebSearch', { results: [] });
   const policy = createPermissions({ root, web, sessionKey: 's', approve: request => adapter.approvals.request(channel, request) });
   let settled = false;
-  const pending = policy.canUseTool('Write', { file_path: area === 'skill' ? 'bit/skills/demo/SKILL.md' : 'bit/memory/note.md', content: '---\nname: demo\ndescription: Demo\n---\nInstructions.' }).then(result => { settled = true; return result; });
+  const pending = policy.canUseTool('Write', { file_path: area === 'skill' ? 'bit/skills/demo/SKILL.md' : area === 'schedule' ? 'bit/schedules/demo.md' : 'bit/memory/note.md', content: area === 'schedule' ? '---\nname: demo\ncron: "0 8 * * 1-5"\nenabled: true\nchannel: bit\n---\nSay hello.' : '---\nname: demo\ndescription: Demo\n---\nInstructions.' }).then(result => { settled = true; return result; });
   await new Promise(resolve => setImmediate(resolve));
   const yes = messages[0].components[0].components[0].data.custom_id;
   for (const content of ['approved', 'sounds good']) {

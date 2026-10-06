@@ -2,12 +2,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT } from '../shared.js';
 import { publicURL } from './web.js';
+import { validateSchedule } from './scheduler.js';
+import { proposedContent, reviewDiff } from './reviewDiff.js';
 import { validateSkill } from './skills.js';
 export const BUILTINS = ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Skill', 'WebSearch', 'WebFetch'];
-export const CUSTOM = ['mcp__machines__list_machines', 'mcp__machines__machine_status'];
+export const CUSTOM = ['mcp__machines__list_machines', 'mcp__machines__machine_status', 'mcp__reminders__set_reminder', 'mcp__reminders__list_reminders', 'mcp__reminders__cancel_reminder'];
 const writes = new Set(['Write', 'Edit']);
 const inside = (base, file) => file === base || file.startsWith(base + path.sep);
-export function createPermissions({ root = ROOT, approve = async () => false, notify = async () => {}, afterWrite = async () => {}, context = '', web, sessionKey = context, resolve } = {}) {
+export function createPermissions({ root = ROOT, approve = async () => false, notify = async () => {}, afterWrite = async () => {}, context = '', web, sessionKey = context, resolve, reminders, webAllowed = true } = {}) {
   root = fs.realpathSync(root);
   const auditFile = path.join(root, 'data/audit.log');
   fs.mkdirSync(path.dirname(auditFile), { recursive: true, mode: 0o700 });
@@ -49,10 +51,18 @@ export function createPermissions({ root = ROOT, approve = async () => false, no
     let result;
     try {
       if (signal?.aborted) throw new Error('Request cancelled');
-      if (CUSTOM.includes(name)) result = { behavior: 'allow', updatedInput: input };
+      if (name === 'mcp__reminders__set_reminder') {
+        if (!reminders) throw new Error('Reminder store unavailable');
+        const proposal = reminders.proposal(input.when, input.text);
+        if (web?.session(sessionKey).tainted) {
+          if (!await approve({ tool: name, file: `Reminder at ${proposal.resolved}`, input: { ...input, due: proposal.due }, signal })) throw new Error('Reminder denied or approval timed out');
+        }
+        result = { behavior: 'allow', updatedInput: { ...input, when: proposal.due } };
+      } else if (CUSTOM.includes(name)) result = { behavior: 'allow', updatedInput: input };
       else {
         if (!BUILTINS.includes(name)) throw new Error('Tool is disabled');
         if (name === 'WebSearch' || name === 'WebFetch') {
+          if (!webAllowed) throw new Error('This schedule does not explicitly request web tools.');
           if (!web) throw new Error('Web policy unavailable');
           if (name === 'WebFetch') {
             await publicURL(input.url, resolve);
@@ -74,27 +84,24 @@ export function createPermissions({ root = ROOT, approve = async () => false, no
         } else {
           const field = name === 'Glob' || name === 'Grep' ? 'path' : 'file_path';
           const target = safePath(input[field]);
-          const area = ['memory', 'skills', 'persona'].find(a => inside(path.join(root, 'bit', a), target));
-          if (!area) throw new Error('Only bit/memory, bit/skills and bit/persona are accessible; source, .env and other paths are denied');
+          const area = ['memory', 'skills', 'schedules', 'persona'].find(a => inside(path.join(root, 'bit', a), target));
+          if (!area) throw new Error('Only bit/memory, bit/skills, bit/schedules and bit/persona are accessible; source, .env and other paths are denied');
           if (name === 'Glob') {
             if (typeof input.pattern !== 'string' || path.isAbsolute(input.pattern) || input.pattern.includes('..') || input.pattern.includes('\\')) throw new Error('Glob pattern must stay inside its explicit path');
           }
           if (name === 'Grep' || name === 'Glob') checkTree(target);
           if (writes.has(name)) {
             if (area === 'persona') throw new Error('Persona is read-only');
-            if (area === 'skills' || (area === 'memory' && web?.session(sessionKey).tainted)) {
-              if (area === 'skills' && path.basename(target) === 'SKILL.md') {
-                let proposed = input.content;
-                if (name === 'Edit') {
-                  const before = fs.readFileSync(target, 'utf8');
-                  proposed = input.replace_all ? before.replaceAll(input.old_string, input.new_string) : before.replace(input.old_string, input.new_string);
-                }
-                validateSkill(proposed);
-              }
+            if (area === 'skills' || area === 'schedules' || (area === 'memory' && web?.session(sessionKey).tainted)) {
               const before = fs.existsSync(target) ? fs.readFileSync(target, 'utf8') : '';
-              const after = name === 'Write' ? input.content : input.replace_all ? before.replaceAll(input.old_string, input.new_string) : before.replace(input.old_string, input.new_string);
-              const oldLines = before ? before.split('\n') : [], newLines = after ? after.split('\n') : [];
-              const diff = `--- ${path.relative(root, target)} (before)\n+++ ${path.relative(root, target)} (after)\n@@ -${oldLines.length ? 1 : 0},${oldLines.length} +${newLines.length ? 1 : 0},${newLines.length} @@\n` + [...oldLines.map(line => '-' + line), ...newLines.map(line => '+' + line)].join('\n');
+              const after = proposedContent(name, input, before);
+              if (area === 'skills' && path.basename(target) === 'SKILL.md') validateSkill(after);
+              if (area === 'schedules') {
+                const relative = path.relative(path.join(root, 'bit/schedules'), target);
+                if (!/^[a-z0-9][a-z0-9_-]{0,63}\.md$/.test(relative)) throw new Error('Schedules must be bit/schedules/<name>.md');
+                validateSchedule(after, relative.slice(0, -3));
+              }
+              const diff = reviewDiff(path.relative(root, target), before, after);
               if (!await approve({ tool: name, file: path.relative(root, target), input, diff, signal })) throw new Error('Change denied or approval timed out');
               safePath(target);
               if ((fs.existsSync(target) ? fs.readFileSync(target, 'utf8') : '') !== before) throw new Error('File changed during approval; review again');
