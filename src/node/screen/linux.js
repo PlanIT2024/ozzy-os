@@ -15,16 +15,34 @@ export async function sessionEnvironment(env = process.env, run = exec) {
   return session;
 }
 export class LinuxScreen {
-  constructor({ env = process.env, run = exec, getEnvironment = sessionEnvironment } = {}) { Object.assign(this, { env, run, getEnvironment }); }
-  async invoke(operation) {
-    const env = await this.getEnvironment(this.env, this.run);
-    if (!env.WAYLAND_DISPLAY || !env.DBUS_SESSION_BUS_ADDRESS) throw new Error('No reachable Wayland session; log in graphically and import its environment into systemd --user.');
+  constructor({ env = process.env, run = exec, getEnvironment = sessionEnvironment, log = console.log } = {}) { Object.assign(this, { env, run, getEnvironment, log }); }
+  diagnostics(stderr, operation, exitCode) {
+    if (operation !== 'capture' && !stderr) return;
+    for (const line of String(stderr || '').split('\n').filter(Boolean)) {
+      try {
+        const parsed = JSON.parse(line), record = {};
+        for (const key of ['event','stage','interface','method','dbusError','message','errorType','errorCode','appId','sender','locked','responseCode','permission']) if (['string','number','boolean'].includes(typeof parsed[key])) record[key] = typeof parsed[key] === 'string' ? parsed[key].replace(/(?:data:image\/|file:\/\/)\S+|[A-Za-z0-9+/=]{256,}/g, '[redacted]').slice(0,1500) : parsed[key];
+        this.log(`screen helper ${JSON.stringify(record)}`);
+      } catch { this.log('screen helper stderr: [unstructured output omitted]'); }
+    }
+    this.log(`screen helper exit ${JSON.stringify({ operation, exitCode })}`);
+  }
+  async invoke(operation, diagnose = operation === 'capture') {
+    const env = { ...await this.getEnvironment(this.env, this.run), BIT_SCREEN_DIAGNOSTICS: diagnose ? '1' : '0' };
+    if (diagnose) this.log('screen capture attempt stage=session_environment');
+    if (!env.WAYLAND_DISPLAY || !env.DBUS_SESSION_BUS_ADDRESS) {
+      if (diagnose) this.log('screen capture failure stage=session_environment');
+      throw new Error('No reachable Wayland session; log in graphically and import its environment into systemd --user.');
+    }
     try {
-      const { stdout } = await this.run('/usr/bin/python3', ['-B', helper, operation], { env, timeout: operation === 'capture' ? 115000 : 10000, maxBuffer: 48 * 1024 * 1024 });
+      const { stdout, stderr } = await this.run('/usr/bin/python3', ['-B', helper, operation], { env, timeout: operation === 'capture' ? 115000 : 10000, maxBuffer: 48 * 1024 * 1024 });
+      this.diagnostics(stderr, operation, 0);
       const result = JSON.parse(stdout);
       if (result.error) throw new Error('Portal operation failed');
       return result;
     } catch (error) {
+      this.diagnostics(error.stderr, operation, typeof error.code === 'number' ? error.code : error.code || 'unknown');
+      if (diagnose) this.log(`screen capture failure stage=helper signal=${error.signal || 'none'} killed=${Boolean(error.killed)}`);
       // execFile errors retain stdout. Never propagate them (capture stdout contains pixels).
       let code;
       try { code = JSON.parse(error.stdout || '{}').error; } catch {}
@@ -32,10 +50,15 @@ export class LinuxScreen {
       throw new Error(known.includes(code) ? `Screenshot unavailable: ${code}` : 'Screenshot portal unavailable; check the graphical session and portal installation.');
     }
   }
-  async available() { try { return (await this.invoke('probe')).available === true; } catch { return false; } }
+  async available({ diagnose = false } = {}) { try { return (await this.invoke('probe', diagnose)).available === true; } catch { return false; } }
   async capture() {
     const result = await this.invoke('capture');
-    return encodeCapture(Buffer.from(result.data, 'base64'), result);
+    try {
+      this.log('screen capture stage=encode');
+      const encoded = await encodeCapture(Buffer.from(result.data, 'base64'), result);
+      this.log(`screen capture success ${JSON.stringify({ original: encoded.original, scaled: encoded.scaled, capturedAt: encoded.capturedAt })}`);
+      return encoded;
+    } catch { this.log('screen capture failure stage=encode'); throw new Error('Screenshot image encoding failed'); }
   }
   close() {}
 }

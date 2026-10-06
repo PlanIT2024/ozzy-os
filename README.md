@@ -209,7 +209,7 @@ logged-in Wayland desktop**; the next node probe will see the change:
 systemctl --user import-environment WAYLAND_DISPLAY DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR XDG_SESSION_TYPE XDG_CURRENT_DESKTOP
 ```
 
-Linux uses `/usr/bin/python3` with PyGObject/Gio and the standard Screenshot
+Linux uses `/usr/bin/python3` with PyGObject/Gio and GTK 4 for first consent and the standard Screenshot
 portal. This Ubuntu host already has Python GI 3.56.2, GNOME Shell 50.1,
 xdg-desktop-portal 1.21.1 and its GNOME 50.0 backend. A read-only probe confirmed
 Screenshot interface version 2, the Wayland portal and monitor layout were
@@ -226,14 +226,33 @@ You can change the permission in GNOME privacy settings.
 
 The [GNOME 50 backend](https://github.com/GNOME/xdg-desktop-portal-gnome/blob/50.0/src/screenshotdialog.c)
 skips the preview/share dialog once the front portal has checked permission.
-**Expected on this installed version:** first consent, then unattended
-non-interactive screenshots until permission is revoked. Each capture requests
-“bIT took a screenshot” through portal notifications, with notify-send fallback;
-GNOME's notification/DND settings control banner visibility. This consent-frequency
-conclusion is from matching source versions; you will verify the actual UI in the
-live test. Screenshot supports the requested unattended behavior here, so no
-ScreenCast session, continuous stream, persist_mode or restore-token fallback
-is needed. Denial never causes a switch to a different capture mechanism.
+**Verified on this installed version:** GNOME Shell 50.1 allows its system
+access dialog only when the caller's app is focused. With screenshot permission
+unset (or set to ask), bIT first presents its own Wayland GTK window. Click
+**Continue**, then **Allow** in “Allow bIT to Take Screenshots?”. The owner click
+provides focus; the portal stores permission, and subsequent captures run
+unattended without another consent window. Deny is respected; no permission is
+written by bIT. The first capture may include the consent helper window.
+
+`bit-node.service` does not follow systemd's `app-<id>.service` naming convention,
+so cgroup discovery alone would not identify bIT. The supported Registry call
+explicitly associates the helper's D-Bus connection with `com.ozzy.bit-node`,
+overriding cgroup discovery; backend method monitoring verified that exact ID.
+No service rename is needed. See the matching [Registry implementation](https://github.com/flatpak/xdg-desktop-portal/blob/1.21.1/src/registry.c)
+and [GNOME focus check](https://github.com/GNOME/gnome-shell/blob/50.1/js/ui/accessDialog.js).
+
+Locked sessions are refused before a screenshot request and are not advertised
+as screen-capable; locking is checked again after consent. The consent window
+and portal request share a 110-second deadline. Every capture request logs its
+stage, response code (0 success / 1 cancelled / 2 other failure), exposed D-Bus
+error name/message, structured helper stderr and exit status. Image stdout and
+unstructured helper output are excluded. Backend errors converted to response 2
+may expose details only in the portal's own journal; correlate its timestamp.
+Each capture requests “bIT took a screenshot” through portal notifications,
+with notify-send fallback; GNOME's notification/DND settings control banners.
+Screenshot was verified to work unattended after first consent, so no ScreenCast
+session, continuous stream or restore-token fallback is needed. Denial never
+switches to a different capture mechanism.
 
 The [Screenshot API](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.Screenshot.html)
 returns a file URI. For this host app the front portal returns the original GNOME

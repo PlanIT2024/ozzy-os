@@ -24,7 +24,7 @@ export async function machineStatus() {
   const [cpu, memory, disks, battery, users, version] = await Promise.all([si.currentLoad(), si.mem(), si.fsSize(), si.battery(), si.users(), si.osInfo()]);
   return { uptime: os.uptime(), cpu: { loadPercent: cpu.currentLoad, cores: os.cpus().length }, memory: { total: memory.total, used: memory.active, available: memory.available }, disks: usableDisks(disks).map(d => ({ mount: d.mount, size: d.size, used: d.used, usePercent: d.use })), battery: battery.hasBattery ? { percent: battery.percent, charging: battery.isCharging, remainingMinutes: battery.timeRemaining } : null, users: [...new Set(users.map(u => u.user))], processUser: os.userInfo().username, os: { platform: version.platform, distro: version.distro, release: version.release, kernel: version.kernel } };
 }
-export function startNode({ transport = process.env.NODE_TRANSPORT || 'local', url = transport === 'relay' ? process.env.RELAY_URL : process.env.BRAIN_URL || 'ws://127.0.0.1:8787', token = transport === 'relay' ? process.env.NODE_RELAY_TOKEN || process.env.RELAY_TOKEN : process.env.NODE_TOKEN, machine = process.env.MACHINE_NAME, key = loadKey(process.env.NODE_KEY_FILE || path.join(ROOT, 'data/keys/node.json')), brainKey = decodePublic(process.env.BRAIN_PUBLIC_KEY), heartbeat = 30000, status = machineStatus, log = console.log, Socket = WebSocket, retry = 2000, screen = createScreen(), capabilityInterval = 15000 } = {}) {
+export function startNode({ transport = process.env.NODE_TRANSPORT || 'local', url = transport === 'relay' ? process.env.RELAY_URL : process.env.BRAIN_URL || 'ws://127.0.0.1:8787', token = transport === 'relay' ? process.env.NODE_RELAY_TOKEN || process.env.RELAY_TOKEN : process.env.NODE_TOKEN, machine = process.env.MACHINE_NAME, key = loadKey(process.env.NODE_KEY_FILE || path.join(ROOT, 'data/keys/node.json')), brainKey = decodePublic(process.env.BRAIN_PUBLIC_KEY), heartbeat = 30000, status = machineStatus, log = console.log, Socket = WebSocket, retry = 2000, screen = createScreen({ log }), capabilityInterval = 15000 } = {}) {
   required({ TOKEN: token, MACHINE_NAME: machine }, ['TOKEN', 'MACHINE_NAME']);
   if (!['local', 'relay'].includes(transport) || canonical(machine) === 'brain') throw new Error('Invalid transport or machine name');
   if (transport === 'local' && !['127.0.0.1', 'localhost', '[::1]'].includes(new URL(url).hostname)) throw new Error('Local transport must use loopback');
@@ -45,9 +45,10 @@ export function startNode({ transport = process.env.NODE_TRANSPORT || 'local', u
       if (m.type !== 'req' || typeof m.id !== 'string' || m.id.length > 128) return;
       const sendResult = value => { if (current === peer && current.state === 'open') current.send({ type: 'res', id: m.id, ...value }); };
       if (!['status', 'screen'].includes(m.method)) return sendResult({ ok: false, error: 'Unsupported method' });
-      if (m.method === 'screen' && !await screen.available()) return sendResult({ ok: false, error: 'Screen capture disabled or graphical session unavailable' });
-      if (busy) return sendResult({ ok: false, error: 'Status collection busy' });
-      busy = true; try { sendResult({ ok: true, result: await (m.method === 'screen' ? screen.capture() : status()) }); } catch { sendResult({ ok: false, error: m.method === 'screen' ? 'Screen capture failed or desktop consent was denied/timed out' : 'Status collection failed' }); } finally { busy = false; }
+      if (m.method === 'screen') log('screen capture attempt stage=node_request');
+      if (m.method === 'screen' && !await screen.available({ diagnose: true })) { log('screen capture failure stage=availability'); return sendResult({ ok: false, error: 'Screen capture disabled or graphical session unavailable' }); }
+      if (busy) { if (m.method === 'screen') log('screen capture failure stage=busy'); return sendResult({ ok: false, error: 'Status collection busy' }); }
+      busy = true; try { sendResult({ ok: true, result: await (m.method === 'screen' ? screen.capture() : status()) }); } catch { if (m.method === 'screen') log('screen capture failure stage=node_capture (see helper diagnostics)'); sendResult({ ok: false, error: m.method === 'screen' ? 'Screen capture failed or desktop consent was denied/timed out' : 'Status collection failed' }); } finally { busy = false; }
     });
     current.start();
   }

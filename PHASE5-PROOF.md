@@ -197,3 +197,79 @@ Deployment: `/usr/bin/node scripts/services.js install` succeeded at
 
 The node's initial ECONNREFUSED during the restart recovered on its second
 attempt. No `.env` setting, transport, relay, crypto or web policy was changed.
+
+## Live screenshot failure fix — 2026-10-06
+
+Root cause: GNOME refused the first screenshot permission dialog because the
+background bIT process was not the focused application. The environment and
+app identity were valid. At 14:29:50 EDT the front portal logged:
+`org.freedesktop.DBus.Error.AccessDenied: Only the focused app is allowed to show a system access dialog`.
+The portal converted that backend D-Bus failure into Screenshot response **2**,
+which the node previously swallowed behind a generic error with no diagnostics.
+
+Versions checked on the machine: xdg-desktop-portal `1.21.1+ds-1ubuntu3.1`,
+GNOME portal `50.0-0ubuntu1`, GNOME Shell `50.1-0ubuntu1.3`.
+Matching authoritative implementation references:
+
+- [Portal 1.21.1 screenshot permission/response path](https://github.com/flatpak/xdg-desktop-portal/blob/1.21.1/src/screenshot.c): non-interactive first requests invoke AccessDialog; failure returns response 2.
+- [GNOME Shell 50.1 focus check](https://github.com/GNOME/gnome-shell/blob/50.1/js/ui/accessDialog.js): compares the requesting app's desktop ID with the focused app.
+- [Portal 1.21.1 cgroup ID detection](https://github.com/flatpak/xdg-desktop-portal/blob/1.21.1/src/xdp-app-info-host.c): `bit-node.service` alone does not match the `app-` unit convention.
+- [Portal 1.21.1 host Registry](https://github.com/flatpak/xdg-desktop-portal/blob/1.21.1/src/registry.c) and [supported Registry API](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.host.portal.Registry.html): explicitly registers the sender as `com.ozzy.bit-node`, overriding cgroup detection. The existing desktop file matches; changing the unit name is unnecessary.
+
+Fix: for unset/ask permission, present a GTK 4 Wayland window with bIT's registered
+application ID. Owner clicks Continue to focus bIT, then GNOME presents its own
+Allow/Deny dialog. bIT reads permission state but never changes it directly.
+Stored Allow uses the existing non-interactive Screenshot API with no extra
+window; stored Deny remains denied. All consent/request waiting shares a
+110-second deadline. An image returned after consent expiry is consumed/deleted
+and discarded. No ScreenCast fallback or input-control API was added.
+
+Logging: every node screen request logs the attempt and any availability/busy/
+capture failure. Linux diagnostics log stages, permission state, registered
+identity, portal response code, exposed D-Bus error name/message, structured
+helper stderr, helper exit status/signal, deletion and output dimensions/time.
+The helper's image-bearing stdout, arbitrary exception text and unstructured
+stderr never enter logs. Messages redact file/data URIs and encoded blobs.
+Backend errors wrapped by the front portal as response 2 can expose their
+D-Bus details only in the portal journal; correlate request timestamps.
+
+Real service-context evidence (EDT, UTC = EDT + 4 hours):
+
+1. 14:33:55: `systemd-run --user --wait --pipe --collect` with the original
+   non-interactive path reproduced response **2** in 109 ms. The session was
+   unlocked, Screenshot version 2 and DP-2 monitor layout were reachable;
+   portal journal repeated the focused-app AccessDenied error.
+2. 14:34:55: corrected capture from `bit-screen-live.service` succeeded with
+   response **0** after first consent. Metadata-only D-Bus monitoring observed
+   the GNOME backend receive `com.ozzy.bit-node` and the dialog title
+   “Allow bIT to Take Screenshots?”. Owner was told before capture.
+3. 14:35:48: `bit-screen-repeat.service` reused permission **yes**, response
+   **0**, with no consent window; helper process exited successfully.
+4. 14:38:58: temporary `ExecStartPost` inside **bit-node.service itself** ran
+   the same LinuxScreen capture. Journal records sender `:1.988` registered
+   as `com.ozzy.bit-node`, permission **yes**, response **0**, helper exit **0**.
+   The temporary runtime drop-in was removed in a finally block and manager
+   reloaded; `ExecStartPost` is empty again. No permanent unit override remains.
+
+Each successful test capture returned 1920×1080, scaled to 1568×882, requested
+“bIT took a screenshot” notification, unlinked the portal PNG immediately, and
+discarded image bytes. No test image was retained or printed. The first capture
+can contain bIT's consent helper window; subsequent captures have no such window.
+
+Locked-session behavior: availability and capture check GNOME ScreenSaver state
+before issuing Screenshot and again after consent. Locked means no capture and
+no advertised screen capability on the next poll. A mocked locked-session
+regression verifies rejection before monitor/capture access. A live lock test
+was offered but no lock confirmation was received, so live lock/unlock behavior
+was not tested during this run.
+
+Final full suite: **88 passed, 0 failed**. New regressions cover response 0/1/2,
+permission routing (yes/no/unset), lock rejection, D-Bus error diagnostics,
+stderr/exit logging and exclusion/redaction of image-bearing fields/stdout.
+Existing real-SDK image non-persistence test still passes.
+
+Services reinstalled with `/usr/bin/node scripts/services.js install` at
+14:38:57 EDT. Both are active/running on `/usr/bin/node`: brain PID 183225,
+node PID 183226. Discord connected at 14:38:59 and node authenticated online at
+14:39:00. `.env`, screenshot enable flag, transport, relay, crypto, grants and
+web policy were unchanged.
