@@ -16,6 +16,8 @@ import { encodeCapture } from '../src/node/screen/image.js';
 import { NodeHub, validCapabilities } from '../src/brain/nodeHub.js';
 import { startNode } from '../src/node/index.js';
 import { sodium, nodeKeys, publicHex } from '../src/transport/crypto.js';
+const focus={app:'Obsidian',window:'Test note',pid:123,windowId:1};
+const observation={focused:focus,target:focus,targetKnown:true};
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function until(predicate){for(let i=0;i<300;i++){if(predicate())return;await pause(10);}throw new Error('Timed out');}
 function fixture(t){const root=fs.mkdtempSync(path.join(os.tmpdir(),'bit-control-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));return root;}
@@ -23,6 +25,7 @@ class Backend extends EventEmitter {
   constructor(){super();this.releases=0;this.actions=[];this.stops=0;}
   async available(){return true;}
   async start(){}
+  async inspect(){return this.observation ?? observation;}
   async act(action){this.actions.push(action);if(this.fail)throw new Error('PRIVATE_TYPED_TEXT');}
   async releaseAll(){this.releases++;}
   async stop(){this.stops++;}
@@ -32,7 +35,7 @@ async function brain(t,{cap=40}={}){
   const root=fixture(t),hub=new EventEmitter(),calls=[],notices=[];
   const screenshot=await encodeCapture(await sharp({create:{width:200,height:100,channels:3,background:'#123456'}}).png().toBuffer(),{monitors:[{x:0,y:0,width:200,height:100,connector:'DP-1',coordinateSpace:'logical'}]});
   hub.list=()=>[{machine:'OZZY-AI',online:true,capabilities:['status','screen','input']}];
-  hub.request=async(machine,method,params)=>{calls.push({machine,method,params});return method==='screen'?screenshot:{done:true};};
+  hub.request=async(machine,method,params)=>{calls.push({machine,method,params});return method==='screen'?screenshot:method==='input_focus'?observation:{done:true};};
   const screens=new ScreenGrants({root,cap:100}),controls=new ControlGrants({root,hub,screens,cap});t.after(()=>controls.close());
   controls.subscribe('A',async text=>notices.push(text));
   const context=extra=>controls.context({thread:'A',screen:screens.context({hub,thread:'A'}),...extra});
@@ -41,7 +44,7 @@ async function brain(t,{cap=40}={}){
 test('node combo validation blocks VT/delete, permits super+L, caps text and validates action vocabulary',()=>{
   for(const keys of ['ctrl+alt+del','ctrl+alt+f1','ctrl+shift+alt+F12'])assert.throws(()=>keyNames(keys),/Blocked/);
   assert.deepEqual(keyNames('super+L'),['super','l']);assert.deepEqual(keyNames('Control+s'),['ctrl','s']);
-  assert.throws(()=>validateAction({action:'type',text:'x'.repeat(501)}));assert.throws(()=>validateAction({action:'type',text:'\x1bterminal'}));
+  assert.throws(()=>validateAction({expectedFocus:focus,action:'type',text:'x'.repeat(501)}));assert.throws(()=>validateAction({expectedFocus:focus,action:'type',text:'\x1bterminal'}));
   assert.throws(()=>validateAction({action:'shell',text:'bad'}));assert.throws(()=>validateAction({action:'scroll',direction:'down',amount:21}));
 });
 test('scaled coordinates map into two monitors, including negative origin and gaps',()=>{
@@ -60,20 +63,20 @@ test('node refuses blocked combos from brain and releases on action error, cap, 
   const root=fixture(t),backend=new Backend(),logs=[];let now=Date.now();
   const input=new InputControl({root,enabled:true,screen:{available:async()=>true},backend,now:()=>now,log:text=>logs.push(text),cap:2});
   const start=async id=>{await input.start({grantId:id,expiresAt:new Date(now+600000).toISOString(),maxActions:2});input.observe(frame(now));};
-  await start('one');await assert.rejects(input.act({grantId:'one',action:'key',keys:'ctrl+alt+f2'}));assert.equal(backend.actions.length,0);assert.ok(backend.releases);assert.equal(input.session,null);
-  await start('two');await input.act({grantId:'two',action:'type',text:'PRIVATE_TYPED_TEXT'});assert.ok(!logs.join('\n').includes('PRIVATE_TYPED_TEXT'));assert.ok(logs.join('\n').includes('textLength'));
+  await start('one');await assert.rejects(input.act({grantId:'one',expectedFocus:focus,action:'key',keys:'ctrl+alt+f2'}));assert.equal(backend.actions.length,0);assert.ok(backend.releases);assert.equal(input.session,null);
+  await start('two');await input.act({grantId:'two',expectedFocus:focus,action:'type',text:'PRIVATE_TYPED_TEXT'});assert.ok(!logs.join('\n').includes('PRIVATE_TYPED_TEXT'));assert.ok(logs.join('\n').includes('textLength'));
   now+=1000;input.observe(frame(now));await input.act({grantId:'two',action:'left_click',coordinate:[1176,220]});assert.equal(input.session,null);assert.equal(input.state.grants.two.count,2);
-  now+=1000;await start('three');backend.fail=true;await assert.rejects(input.act({grantId:'three',action:'key',keys:'ctrl+s'}));assert.equal(input.session,null);backend.fail=false;
+  now+=1000;await start('three');backend.fail=true;await assert.rejects(input.act({grantId:'three',expectedFocus:focus,action:'key',keys:'ctrl+s'}));assert.equal(input.session,null);backend.fail=false;
   await start('four');await input.close();assert.equal(input.session,null);assert.ok(backend.stops>=4);
   await start('five');backend.emit('closed');await until(()=>!input.session);assert.equal(input.state.grants.five.revoked,true);
 });
 test('node enforces rate limit, expired/wrong grant, fresh geometry and persisted session count',async t=>{
   const root=fixture(t),backend=new Backend();let now=Date.now();const make=()=>new InputControl({root,enabled:true,screen:{available:async()=>true},backend,now:()=>now,log:()=>{}});let input=make();
-  const props={grantId:'rate',expiresAt:new Date(now+600000).toISOString(),maxActions:40};await input.start(props);input.observe(frame(now));await input.act({grantId:'rate',action:'key',keys:'ctrl+s'});
-  await assert.rejects(input.act({grantId:'rate',action:'key',keys:'ctrl+s'}));assert.equal(backend.actions.length,1);
+  const props={grantId:'rate',expiresAt:new Date(now+600000).toISOString(),maxActions:40};await input.start(props);input.observe(frame(now));await input.act({grantId:'rate',expectedFocus:focus,action:'key',keys:'ctrl+s'});
+  await assert.rejects(input.act({grantId:'rate',expectedFocus:focus,action:'key',keys:'ctrl+s'}));assert.equal(backend.actions.length,1);
   input=make();await assert.rejects(input.start(props),/revoked/);
-  const fresh={...props,grantId:'fresh'};await input.start(fresh);input.observe(frame(now));await assert.rejects(input.act({grantId:'wrong',action:'key',keys:'ctrl+s'}));
-  await input.start({...props,grantId:'expiry',expiresAt:new Date(now+1000).toISOString()});input.observe(frame(now));now+=1000;await assert.rejects(input.act({grantId:'expiry',action:'key',keys:'ctrl+s'}));
+  const fresh={...props,grantId:'fresh'};await input.start(fresh);input.observe(frame(now));await assert.rejects(input.act({grantId:'wrong',expectedFocus:focus,action:'key',keys:'ctrl+s'}));
+  await input.start({...props,grantId:'expiry',expiresAt:new Date(now+1000).toISOString()});input.observe(frame(now));now+=1000;await assert.rejects(input.act({grantId:'expiry',expectedFocus:focus,action:'key',keys:'ctrl+s'}));
 });
 test('brain hard denials have no approval route: absent/other thread/expired/tainted/scheduled/no input',async t=>{
   const b=await brain(t);let approvals=0;const approve=async()=>{approvals++;return true;};
@@ -88,34 +91,33 @@ test('brain hard denials have no approval route: absent/other thread/expired/tai
   b.hub.list=()=>[{machine:'OZZY-AI',online:true,capabilities:['screen']}];await assert.rejects(b.context({approve}).authorize(raw),/capability/);
   b.controls.state.grants.A.expiresAt=new Date(0).toISOString();await assert.rejects(b.context({approve}).authorize(raw),/expired/);assert.equal(approvals,0);
 });
-test('every computer action waits for owner button; chat cannot approve; exact text on card; deny ends task',async t=>{
+test('input actions wait for owner button; screenshots are automatic; chat cannot approve; exact text on card; deny ends task',async t=>{
   const b=await brain(t);await b.controls.on('A','OZZY-AI',{withScreen:true});const sent=[],relay=new ApprovalRelay('owner');t.after(()=>relay.close());
   const channel={id:'A',send:async packet=>{sent.push(packet);return{id:'card-'+sent.length,edit:async()=>{}};}};
   const context=b.context({approve:request=>relay.request(channel,request)}),permissions=createPermissions({root:b.root,control:context});
-  const raw={machine:'OZZY-AI',action:'screenshot',target:'read desktop before input'};let settled=false;
-  const pending=permissions.canUseTool('mcp__computer__computer',raw).then(result=>{settled=true;return result;});await until(()=>sent.length===1);
-  await relay.handle({user:{id:'owner'},customId:'approved'});assert.equal(settled,false);assert.equal(b.calls.filter(c=>c.method==='screen').length,0);
+  const raw={machine:'OZZY-AI',action:'screenshot',target:'read desktop before input'};
+  assert.equal((await permissions.canUseTool('mcp__computer__computer',raw)).behavior,'allow');
+  assert.equal((await context.execute(raw)).content[1].type,'image');assert.equal(sent.length,0);
   const click=async(index,yes=true,owner='owner')=>relay.handle({user:{id:owner},channelId:'A',message:{id:'card-'+(index+1)},customId:sent[index].components[0].components[yes?0:1].data.custom_id,deferUpdate:async()=>{}});
-  await click(0,true,'intruder');assert.equal(settled,false);await click(0);assert.equal((await pending).behavior,'allow');assert.equal((await context.execute({target:raw.target,action:raw.action,machine:raw.machine})).content[1].type,'image');assert.equal(sent.length,1);
   const text='exact text\nwith "quotes" and $()';const typing={machine:'OZZY-AI',action:'type',target:'draft text box',text};
-  const next=context.execute(typing);await until(()=>sent.length===2);const card=JSON.parse(sent[1].files[0].attachment.toString());assert.equal(card.text,text);assert.match(sent[1].content,/exact text/);assert.equal(b.calls.filter(c=>c.method==='input_action').length,0);
-  await click(1);assert.equal((await next).isError,undefined);assert.equal(b.calls.filter(c=>c.method==='input_action').length,1);assert.equal(b.calls.filter(c=>c.method==='screen').length,2);
-  const denied=context.execute({machine:'OZZY-AI',action:'key',keys:'ctrl+s',target:'save draft'});await until(()=>sent.length===3);await click(2,false);assert.equal((await denied).isError,true);assert.equal(b.controls.active('A'),null);
-  assert.equal((await context.execute(typing)).isError,true);assert.equal(sent.length,3);
+  const next=context.execute(typing);await until(()=>sent.length===1);await relay.handle({user:{id:'owner'},customId:'approved'});assert.equal(b.calls.filter(c=>c.method==='input_action').length,0);await click(0,true,'intruder');assert.equal(b.calls.filter(c=>c.method==='input_action').length,0);const card=JSON.parse(sent[0].files[0].attachment.toString());assert.equal(card.text,text);assert.match(sent[0].content,/exact text/);assert.equal(b.calls.filter(c=>c.method==='input_action').length,0);
+  await click(0);assert.equal((await next).isError,undefined);assert.equal(b.calls.filter(c=>c.method==='input_action').length,1);assert.equal(b.calls.filter(c=>c.method==='screen').length,2);
+  const denied=context.execute({machine:'OZZY-AI',expectedFocus:focus,action:'key',keys:'ctrl+s',target:'save draft'});await until(()=>sent.length===2);await click(1,false);assert.equal((await denied).isError,true);assert.equal(b.controls.active('A'),null);
+  assert.equal((await context.execute(typing)).isError,true);assert.equal(sent.length,2);
   const audit=fs.readFileSync(path.join(b.root,'data/audit.log'),'utf8');assert.ok(!audit.includes(text));assert.ok(!audit.includes(b.screenshot.data));
 });
 test('taint or grant revocation during approval blocks execution; GNOME Stop and action cap end grants',async t=>{
-  const b=await brain(t,{cap:1});await b.controls.on('A','OZZY-AI',{withScreen:true});let tainted=false;
+  const b=await brain(t,{cap:2});await b.controls.on('A','OZZY-AI',{withScreen:true});let tainted=false;
   const context=b.context({tainted:()=>tainted,approve:async()=>{tainted=true;return true;}});
-  const failed=await context.execute({machine:'OZZY-AI',action:'screenshot',target:'desktop'});assert.ok(failed.isError);assert.equal(b.calls.filter(c=>c.method==='screen').length,0);
-  await b.controls.on('A','OZZY-AI',{withScreen:true});const good=b.context({approve:async()=>true});await good.execute({machine:'OZZY-AI',action:'screenshot',target:'desktop'});await good.execute({machine:'OZZY-AI',action:'key',keys:'ctrl+s',target:'save'});assert.equal(b.controls.active('A'),null);assert.match(b.notices.join('\n'),/1 approved steps/);
+  await context.execute({machine:'OZZY-AI',action:'screenshot',target:'desktop'});const failed=await context.execute({machine:'OZZY-AI',action:'key',keys:'ctrl+s',target:'save'});assert.ok(failed.isError);assert.equal(b.calls.filter(c=>c.method==='input_action').length,0);
+  await b.controls.on('A','OZZY-AI',{withScreen:true});const good=b.context({approve:async()=>true});await good.execute({machine:'OZZY-AI',action:'screenshot',target:'desktop'});await good.execute({machine:'OZZY-AI',expectedFocus:focus,action:'key',keys:'ctrl+s',target:'save'});assert.equal(b.controls.active('A'),null);assert.match(b.notices.join('\n'),/2 steps/);
   await b.controls.on('A','OZZY-AI',{withScreen:true});const grant=b.controls.grant('A');b.hub.emit('control_closed',{machine:'OZZY-AI',grantId:grant.id,reason:'GNOME Stop'});assert.equal(b.controls.active('A'),null);assert.equal(b.controls.state.grants.A.reason,'GNOME Stop');
 });
 test('target previews are small crops attached in memory; grants persist with original expiry and counts',async t=>{
   const b=await brain(t);await b.controls.on('A','OZZY-AI',{withScreen:true});let approval;const context=b.context({approve:async request=>{approval=request;return true;}});
   await context.execute({machine:'OZZY-AI',action:'screenshot',target:'desktop'});b.controls.preview('A',true);await context.execute({machine:'OZZY-AI',action:'left_click',coordinate:[100,50],target:'safe test point'});
   const meta=await sharp(approval.preview).metadata();assert.ok(meta.width<=160&&meta.height<=120);assert.ok(meta.width<200);
-  const restored=new ControlGrants({root:b.root,hub:b.hub,screens:b.screens});t.after(()=>restored.close());assert.equal(restored.grant('A').id,b.controls.grant('A').id);assert.equal(restored.grant('A').count,1);assert.equal(restored.grant('A').expiresAt,b.controls.grant('A').expiresAt);
+  const restored=new ControlGrants({root:b.root,hub:b.hub,screens:b.screens});t.after(()=>restored.close());assert.equal(restored.grant('A').id,b.controls.grant('A').id);assert.equal(restored.grant('A').count,2);assert.equal(restored.grant('A').expiresAt,b.controls.grant('A').expiresAt);
   assert.ok(commands().find(command=>command.name==='control'));assert.equal(validCapabilities(['status','screen','input']),true);assert.equal(validCapabilities(['status','input']),false);
 });
 test('Python helper releases held keys/buttons on failure and shutdown, refuses blocked combo and rejects unshared monitor',()=>{
@@ -126,6 +128,7 @@ x=p.Input(None);x.session='/session';events=[]
 x.notify=lambda method,signature,args:events.append((method,args))
 x.held_keys.add(123);x.held_buttons.add(272);x.release();assert len(events)==2 and all(event[1][-1]==0 for event in events)
 p.screen.availability=lambda bus:{'monitors':[]}
+x.check_focus=lambda *args:None
 try:x.action({'action':'key','keys':'ctrl+alt+f1'});assert False
 except RuntimeError:assert not x.held_keys
 calls=[]
@@ -156,8 +159,8 @@ test('restored runtime requires another screen review and step approval before i
   const b=await brain(t);await b.controls.on('A','OZZY-AI',{withScreen:true});let approvals=0;
   const context=b.context({approve:async()=>{approvals++;return true;}});await context.execute({machine:'OZZY-AI',action:'screenshot',target:'desktop'});
   const request=b.hub.request;b.hub.request=async(machine,method,params)=>method==='input_start'?{newSession:true}:request(machine,method,params);
-  const result=await context.execute({machine:'OZZY-AI',action:'key',keys:'ctrl+s',target:'save'});
-  assert.match(result.content[0].text,/no input was sent/);assert.equal(b.calls.filter(c=>c.method==='input_action').length,0);assert.equal(b.controls.grant('A').count,0);assert.equal(approvals,2);
+  const result=await context.execute({machine:'OZZY-AI',expectedFocus:focus,action:'key',keys:'ctrl+s',target:'save'});
+  assert.match(result.content[0].text,/no input was sent/);assert.equal(b.calls.filter(c=>c.method==='input_action').length,0);assert.equal(b.controls.grant('A').count,1);assert.equal(approvals,1);
   const id=b.controls.grant('A').id;await b.controls.close();assert.equal(b.controls.grant('A').id,id);assert.equal(b.calls.at(-1).params.revoke,false);
 });
 
@@ -171,13 +174,13 @@ test('web result ends an active control grant before any further step approval',
 test('node state-write failure still releases and closes portal, and disables capability',async t=>{
   const root=fixture(t),backend=new Backend(),input=new InputControl({root,enabled:true,screen:{available:async()=>true},backend,log:()=>{}});
   const now=Date.now();await input.start({grantId:'disk-error',expiresAt:new Date(now+600000).toISOString(),maxActions:40});input.observe(frame(now));fs.rmSync(input.file);fs.mkdirSync(input.file,{recursive:true});
-  await assert.rejects(input.act({grantId:'disk-error',action:'key',keys:'ctrl+s'}));assert.equal(backend.actions.length,0);assert.equal(input.session,null);assert.ok(backend.releases);assert.ok(backend.stops);assert.equal(await input.available(),false);
+  await assert.rejects(input.act({grantId:'disk-error',expectedFocus:focus,action:'key',keys:'ctrl+s'}));assert.equal(backend.actions.length,0);assert.equal(input.session,null);assert.ok(backend.releases);assert.ok(backend.stops);assert.equal(await input.available(),false);
 });
 
 test('rate limits span new grants and restored grants cannot extend node-owned expiry',async t=>{
   const root=fixture(t),backend=new Backend();let now=0;const input=new InputControl({root,enabled:true,screen:{available:async()=>true},backend,now:()=>now,log:()=>{}});
-  await input.start({grantId:'initial',expiresAt:new Date(5000).toISOString(),maxActions:40});input.observe(frame(now));await input.act({grantId:'initial',action:'key',keys:'s+ctrl'});assert.equal(backend.actions[0].keys,'ctrl+s');
-  await input.close();await input.start({grantId:'other',expiresAt:new Date(600000).toISOString(),maxActions:40});input.observe(frame(now));await assert.rejects(input.act({grantId:'other',action:'key',keys:'ctrl+s'}));assert.equal(backend.actions.length,1);
+  await input.start({grantId:'initial',expiresAt:new Date(5000).toISOString(),maxActions:40});input.observe(frame(now));await input.act({grantId:'initial',expectedFocus:focus,action:'key',keys:'s+ctrl'});assert.equal(backend.actions[0].keys,'ctrl+s');
+  await input.close();await input.start({grantId:'other',expiresAt:new Date(600000).toISOString(),maxActions:40});input.observe(frame(now));await assert.rejects(input.act({grantId:'other',expectedFocus:focus,action:'key',keys:'ctrl+s'}));assert.equal(backend.actions.length,1);
   now=1000;await input.start({grantId:'initial',expiresAt:new Date(now+600000).toISOString(),maxActions:40});assert.equal(input.session.expiresAt,new Date(5000).toISOString());assert.equal(input.session.state.count,1);await input.close();
 });
 
@@ -214,7 +217,7 @@ p.main()`;
 test('only one outstanding control step is allowed; another action cannot queue its own approval',async t=>{
   const b=await brain(t);await b.controls.on('A','OZZY-AI',{withScreen:true});let resolveApproval,requests=0;
   const context=b.context({approve:()=>{requests++;return new Promise(resolve=>resolveApproval=resolve);}});
-  const raw={machine:'OZZY-AI',action:'screenshot',target:'inspect desktop'};const first=context.authorize(raw);await until(()=>requests===1);
+  await context.execute({machine:'OZZY-AI',action:'screenshot',target:'inspect desktop'});const raw={machine:'OZZY-AI',action:'key',keys:'ctrl+s',target:'save'};const first=context.authorize(raw);await until(()=>requests===1);
   await assert.rejects(context.authorize({...raw,target:'another request'}),/current control step/);assert.equal(requests,1);
   resolveApproval(true);await first;assert.equal((await context.execute(raw)).isError,undefined);
 });
@@ -224,4 +227,136 @@ test('runtime suspension preserves grants; stale task cleanup cannot revoke a ne
   b.hub.emit('control_closed',{machine:'OZZY-AI',grantId:old.id,reason:'runtime suspended'});assert.equal(b.controls.grant('A').id,old.id);assert.ok(b.controls.grant('A').runtimeClosedAt);
   await b.controls.on('A','OZZY-AI',{withScreen:true});const fresh=b.controls.grant('A');
   assert.ok((await context.execute({machine:'OZZY-AI',action:'screenshot',target:'old task'})).isError);assert.equal(b.controls.grant('A').id,fresh.id);
+});
+
+test('node blocks Discord focus and targets independently of brain, and refuses unknown click targets',async t=>{
+  const root=fixture(t),backend=new Backend();let now=Date.now();
+  const input=new InputControl({root,enabled:true,screen:{available:async()=>true},backend,now:()=>now,log:()=>{}});
+  t.after(()=>input.close());
+  for(const [i,observed,action] of [
+    [1,{...observation,focused:{...focus,app:'Discord'}},{action:'type',text:'must never post'}],
+    [2,{...observation,focused:{...focus,window:'Discord — general'}},{action:'key',keys:'enter'}],
+    [3,{...observation,target:{...focus,app:'discord'}},{action:'left_click',coordinate:[1176,220]}],
+    [4,{...observation,focused:{...focus,app:'Discord'}},{action:'left_click',coordinate:[1176,220]}],
+    [5,{...observation,target:null,targetKnown:false},{action:'left_click',coordinate:[1176,220]}],
+    [6,{...observation,destination:null},{action:'drag',coordinate:[1176,220],end:[1177,220]}],
+  ]){
+    now+=1000;await input.start({grantId:'blocked-'+i,expiresAt:new Date(now+600000).toISOString(),maxActions:40});input.observe(frame(now));
+    backend.observation=observed;
+    if(i===6){let reads=0;backend.inspect=async()=>++reads===1?observation:{...observation,target:{...focus,app:'Discord'}};}
+    await assert.rejects(input.act({grantId:'blocked-'+i,...action,expectedFocus:focus}),/Blocked application|Control target/);
+    assert.equal(backend.actions.length,0);assert.equal(input.session,null);
+  }
+});
+
+test('focus mismatch at execution aborts without input and requires a fresh approved step',async t=>{
+  const root=fixture(t),backend=new Backend(),input=new InputControl({root,enabled:true,screen:{available:async()=>true},backend,log:()=>{}});
+  t.after(()=>input.close());const now=Date.now();await input.start({grantId:'focus',expiresAt:new Date(now+600000).toISOString(),maxActions:40});input.observe(frame(now));
+  for(const change of [{app:'Text Editor'},{window:'Different note'},{pid:456},{windowId:99}]){
+    backend.observation={...observation,focused:{...focus,...change}};
+    await assert.rejects(input.act({grantId:'focus',action:'type',text:'wrong place',expectedFocus:focus}),/focus changed/);
+    assert.equal(backend.actions.length,0);assert.equal(input.session.state.count,0);assert.ok(input.session);
+  }
+  const b=await brain(t);await b.controls.on('A','OZZY-AI',{withScreen:true});let approvals=0;
+  const context=b.context({approve:async()=>{approvals++;return true;}});
+  await context.execute({machine:'OZZY-AI',action:'screenshot',target:'read screen'});
+  const original=b.hub.request;b.hub.request=async(machine,method,params)=>{if(method==='input_action')throw new Error('Control focus changed since approval; no input sent.');return original(machine,method,params);};
+  const result=await context.execute({machine:'OZZY-AI',action:'type',text:'approved text',target:'note'});
+  assert.ok(result.isError);assert.match(result.content[0].text,/fresh screenshot.*new approval/);assert.ok(b.controls.active('A'));assert.equal(approvals,1);
+  const noFrame=await context.execute({machine:'OZZY-AI',action:'key',keys:'enter',target:'submit'});assert.ok(noFrame.isError);assert.equal(approvals,1);
+});
+
+test('every input card shows node truth separately from model target, terminal banner and exact typed text',async t=>{
+  const b=await brain(t);await b.controls.on('A','OZZY-AI',{withScreen:true});const terminal={...focus,app:'org.gnome.Terminal',window:'Shell — project'};
+  const request=b.hub.request;b.hub.request=async(machine,method,params)=>method==='input_focus'?{...observation,focused:terminal,target:terminal}:request(machine,method,params);
+  const cards=[];const context=b.context({approve:async card=>{cards.push(card);return true;}});
+  await context.execute({machine:'OZZY-AI',action:'screenshot',target:'desktop'});assert.equal(cards.length,0);
+  const raw={machine:'OZZY-AI',action:'type',text:'echo "exact"\n',target:'model incorrectly believes this is a note'};
+  await context.authorize(raw);assert.match(cards[0].description,/Focused: org.gnome.Terminal — Shell — project/);assert.match(cards[0].description,/⚠️ Typing into a terminal runs commands\./);
+  assert.ok(cards[0].description.includes(raw.text));assert.deepEqual(cards[0].input.focus.focused,terminal);
+  await context.execute(raw);assert.deepEqual(b.calls.find(c=>c.method==='input_action').params.expectedFocus,terminal);
+  await context.authorize({machine:'OZZY-AI',action:'left_click',coordinate:[100,50],target:'focus change'});assert.match(cards[1].description,/At target: org.gnome.Terminal/);assert.match(cards[1].description,/Focused:/);
+});
+
+test('computer screenshots bypass step approval, post camera notice and consume control and daily caps',async t=>{
+  const b=await brain(t,{cap:2});await b.controls.on('A','OZZY-AI',{withScreen:true});let approvals=0;const notices=[];
+  const context=b.controls.context({thread:'A',approve:async()=>{approvals++;return false;},screen:b.screens.context({hub:b.hub,thread:'A',notify:async text=>notices.push(text)})});
+  for(let i=0;i<2;i++)assert.equal((await context.execute({machine:'OZZY-AI',action:'screenshot',target:'inspect desktop'})).isError,undefined);
+  assert.equal(approvals,0);assert.equal(notices.length,2);assert.ok(notices.every(text=>text.startsWith('📸')));assert.equal(b.screens.status().captures,2);assert.equal(b.controls.state.grants.A.count,2);assert.equal(b.controls.active('A'),null);
+  assert.ok((await context.execute({machine:'OZZY-AI',action:'screenshot',target:'over cap'})).isError);assert.equal(notices.length,2);
+});
+
+test('expiry warning fires two minutes before expiry once, survives restart, and cancels on off',async t=>{
+  const b=await brain(t);await b.controls.on('A','OZZY-AI',{withScreen:true});
+  t.mock.timers.enable({apis:['setTimeout']});let now=Date.now();b.controls.now=()=>now;
+  const g=b.controls.grant('A');g.expiresAt=new Date(now+180000).toISOString();b.controls.arm('A',g);
+  now+=59999;t.mock.timers.tick(59999);assert.equal(b.notices.filter(n=>n.includes('expires in 2 minutes')).length,0);
+  now++;t.mock.timers.tick(1);await Promise.resolve();assert.equal(b.notices.filter(n=>n.includes('expires in 2 minutes')).length,1);assert.ok(g.warnedAt);
+  const restored=new ControlGrants({root:b.root,hub:b.hub,screens:b.screens,now:()=>now});restored.subscribe('A',text=>b.notices.push(text));t.after(()=>restored.close());
+  await restored.warn('A',restored.grant('A'));assert.equal(b.notices.filter(n=>n.includes('expires in 2 minutes')).length,1);
+  now+=120000;t.mock.timers.tick(120000);await Promise.resolve();assert.equal(b.controls.active('A'),null);
+  // A second grant cancelled before the warning must not post a warning later.
+  now=Date.now();await b.controls.on('A','OZZY-AI',{withScreen:true});const second=b.controls.grant('A');second.expiresAt=new Date(now+180000).toISOString();b.controls.arm('A',second);await b.controls.off('A');
+  t.mock.timers.tick(60000);assert.equal(b.notices.filter(n=>n.includes('expires in 2 minutes')).length,1);
+});
+
+test('resident portal helper independently checks real focus, Discord and targets before input',()=>{
+  const helper=path.resolve('src/node/input/portal.py');
+  const code=`import importlib.util,sys
+s=importlib.util.spec_from_file_location('input_portal',sys.argv[1]);p=importlib.util.module_from_spec(s);s.loader.exec_module(p)
+x=p.Input(None)
+f={'app':'Obsidian','window':'Note','pid':1,'windowId':2}
+p.snapshot=lambda point=None:{'focused':f,'target':f,'targetKnown':True}
+x.check_focus({'action':'type','expectedFocus':f})
+try:x.check_focus({'action':'type','expectedFocus':{**f,'window':'Old'}});assert False
+except RuntimeError as e:assert str(e)=='control_focus_changed'
+p.snapshot=lambda point=None:{'focused':{**f,'app':'Discord'},'target':f,'targetKnown':True}
+try:x.check_focus({'action':'key','expectedFocus':f});assert False
+except RuntimeError as e:assert str(e)=='blocked_application'
+p.snapshot=lambda point=None:{'focused':f,'target':{**f,'app':'Discord'},'targetKnown':True}
+try:x.check_focus({'action':'left_click'},{'x':1,'y':1});assert False
+except RuntimeError as e:assert str(e)=='blocked_application'
+p.snapshot=lambda point=None:{'focused':f,'target':None,'targetKnown':False}
+try:x.check_focus({'action':'left_click'},{'x':1,'y':1});assert False
+except RuntimeError as e:assert str(e)=='control_target_unknown'
+print('focus defense verified')`;
+  assert.match(execFileSync('/usr/bin/python3',['-B','-c',code,helper],{encoding:'utf8',stdio:['ignore','pipe','pipe']}),/focus defense verified/);
+});
+
+test('AT-SPI snapshot uses active window metadata and fails closed for overlap or inactive hits',()=>{
+  const helper=path.resolve('src/node/input/focus.py');
+  const code=`import importlib.util,sys
+s=importlib.util.spec_from_file_location('bit_focus',sys.argv[1]);p=importlib.util.module_from_spec(s);s.loader.exec_module(p)
+class State:
+ def __init__(self,active):self.active=active
+ def contains(self,state):return state==p.Atspi.StateType.SHOWING or self.active and state==p.Atspi.StateType.ACTIVE
+class Window:
+ def __init__(self,name,active,hit):self.name=name;self.active=active;self.hit=hit
+ def get_state_set(self):return State(self.active)
+ def get_name(self):return self.name
+ def get_id(self):return 42
+ def get_component_iface(self):return self
+ def contains(self,*args):return self.hit
+ def get_accessible_at_point(self,*args):return self if self.hit else None
+class App:
+ def __init__(self,name,windows):self.name=name;self.windows=windows
+ def get_name(self):return self.name
+ def get_process_id(self):return 123
+ def get_child_count(self):return len(self.windows)
+ def get_child_at_index(self,i):return self.windows[i]
+class Desktop:
+ def __init__(self,apps):self.apps=apps
+ def get_child_count(self):return len(self.apps)
+ def get_child_at_index(self,i):return self.apps[i]
+w=Window('Real window',True,True);background=Window('Background',False,True)
+p.Atspi.get_desktop=lambda i:Desktop([App('Editor',[w])])
+r=p.snapshot({'x':10,'y':10});assert r['focused']['app']=='Editor' and r['targetKnown']
+p.Atspi.get_desktop=lambda i:Desktop([App('Editor',[w]),App('Other',[background])])
+r=p.snapshot({'x':10,'y':10});assert r['focused']['window']=='Real window' and not r['targetKnown']
+w.hit=False
+r=p.snapshot({'x':10,'y':10});assert r['target']['app']=='Other' and not r['targetKnown']
+w.active=False
+assert p.snapshot()['focused'] is None
+print('snapshot verified')`;
+  assert.match(execFileSync('/usr/bin/python3',['-B','-c',code,helper],{encoding:'utf8',stdio:['ignore','pipe','pipe']}),/snapshot verified/);
 });

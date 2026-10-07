@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { sessionEnvironment } from '../screen/linux.js';
 const exec = promisify(execFile);
+const focusHelper = fileURLToPath(new URL('./focus.py', import.meta.url));
 const helper = fileURLToPath(new URL('./portal.py', import.meta.url));
 export class LinuxInput extends EventEmitter {
   constructor({ env = process.env, log = console.log, spawnFn = spawn, run = exec, getEnvironment = sessionEnvironment } = {}) {
@@ -30,7 +31,7 @@ export class LinuxInput extends EventEmitter {
         try {
           const message=JSON.parse(line);
           if (message.event==='closed') { this.log('input portal session closed'); this.emit('closed', { source:'portal', reason:'GNOME Stop' }); }
-          else { const p=this.pending.get(message.id); if(p){clearTimeout(p.timer);this.pending.delete(message.id);message.ok ? p.resolve(message.result) : p.reject(new Error('RemoteDesktop operation failed'));} }
+          else { const p=this.pending.get(message.id); if(p){clearTimeout(p.timer);this.pending.delete(message.id);message.ok ? p.resolve(message.result) : p.reject(new Error(message.errorCode==='focus_changed'?'Control focus changed since approval; no further input sent. Inspect focus and request a new approval.':'RemoteDesktop operation failed'));} }
         } catch { this.log('input helper invalid response (omitted)'); child.kill(); }
       }
     });
@@ -50,6 +51,11 @@ export class LinuxInput extends EventEmitter {
   request(method,params={},timeout=10000){
     const child=this.child;if(!child || child.killed)return Promise.reject(new Error('RemoteDesktop session unavailable'));
     return new Promise((resolve,reject)=>{const id=randomUUID();const timer=setTimeout(()=>{this.pending.delete(id);reject(new Error('RemoteDesktop operation timed out'));child.kill('SIGTERM');},timeout);this.pending.set(id,{resolve,reject,timer});child.stdin.write(JSON.stringify({id,method,params})+'\n',error=>{if(error){clearTimeout(timer);this.pending.delete(id);reject(new Error('RemoteDesktop pipe failed'));}});});
+  }
+  async inspect(point) {
+    const env = await this.getEnvironment(this.env,this.run);
+    const {stdout} = await this.run('/usr/bin/python3',['-B',focusHelper,...(point?[JSON.stringify(point)]:[])],{env,timeout:10000,maxBuffer:16384});
+    return JSON.parse(stdout);
   }
   act(action){return this.request('action',action);}
   async releaseAll(){if(this.child && !this.child.killed)await this.request('release',{},2000);}

@@ -10,6 +10,8 @@ from pathlib import Path
 from gi.repository import Gio, GLib
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'screen'))
 import portal as screen
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from focus import snapshot
 screen.CAPTURE = True
 DEST, PATH, APP = screen.DEST, screen.PATH, screen.APP
 RD = 'org.freedesktop.portal.RemoteDesktop'
@@ -165,6 +167,19 @@ class Input:
         if not (0<=x<monitor['width'] and 0<=y<monitor['height']):raise RuntimeError('coordinate_out_of_bounds')
         self.notify('NotifyPointerMotionAbsolute','udd',(node,x,y))
 
+    def check_focus(self, action, point=None):
+        observed = snapshot(point)
+        focused = observed['focused']
+        if not focused: raise RuntimeError('control_focus_unavailable')
+        blocked = [name.strip().lower() for name in os.environ.get('CONTROL_BLOCKED_APPS', 'discord').split(',') if name.strip()]
+        for record in (focused, observed['target']):
+            if record and any(name in (record['app'] + ' ' + record['window']).lower() for name in blocked):
+                raise RuntimeError('blocked_application')
+        if point and not observed['targetKnown']: raise RuntimeError('control_target_unknown')
+        if action['action'] in ('type', 'key') and focused != action.get('expectedFocus'):
+            raise RuntimeError('control_focus_changed')
+        return observed
+
     def action(self,action):
         screen.stage('action')
         layout=screen.availability(self.bus)
@@ -172,6 +187,8 @@ class Input:
             if field in action:
                 expected=action[field]['monitor']
                 if not any(all(monitor.get(key)==expected.get(key) for key in ('x','y','width','height')) for monitor in layout['monitors']):raise RuntimeError('monitor_layout_changed')
+        self.check_focus(action, action.get('point'))
+        if action.get('destination'): self.check_focus(action, action['destination'])
         # Independent defense in the helper, in addition to the node validator.
         if action.get('action')=='key':
             keys=action['keys'].split('+')
@@ -183,6 +200,7 @@ class Input:
             if kind in ('left_click','right_click','double_click'):
                 button=273 if kind=='right_click' else 272
                 for i in range(2 if kind=='double_click' else 1):
+                    self.check_focus(action, action.get('point'))
                     self.button(button,1);self.button(button,0)
                     if kind=='double_click' and i==0:time.sleep(0.08)
             elif kind=='drag':
@@ -195,10 +213,12 @@ class Input:
                 self.notify('NotifyPointerAxisDiscrete','ui',(1 if horizontal else 0,steps))
             elif kind=='key':
                 symbols={'ctrl':0xffe3,'alt':0xffe9,'shift':0xffe1,'super':0xffeb,'enter':0xff0d,'escape':0xff1b,'tab':0xff09,'backspace':0xff08,'delete':0xffff,'space':32,'up':0xff52,'down':0xff54,'left':0xff51,'right':0xff53,'home':0xff50,'end':0xff57,'pageup':0xff55,'pagedown':0xff56,'insert':0xff63,**{'f'+str(i):0xffbd+i for i in range(1,13)}}
+                self.check_focus(action)
                 for key in action['keys'].split('+'):self.key(symbols[key] if key in symbols else ord(key),1)
             elif kind=='type':
                 for char in action['text']:
                     while GLib.MainContext.default().pending():GLib.MainContext.default().iteration(False)
+                    self.check_focus(action)
                     code=0xff0d if char=='\n' else 0xff09 if char=='\t' else ord(char) if ord(char)<256 else 0x01000000+ord(char)
                     self.key(code,1);self.key(code,0)
             elif kind!='mouse_move':raise RuntimeError('unsupported_action')
@@ -258,7 +278,8 @@ def main():
             except Exception as error:
                 controller.release()
                 screen.diagnostic('failure',**screen.error_details(error))
-                emit({'id':message.get('id'),'ok':False})
+                emit({'id':message.get('id'),'ok':False,'errorCode':'focus_changed' if str(error)=='control_focus_changed' else 'operation_failed'})
+                if str(error)=='control_focus_changed': continue
                 stop();return GLib.SOURCE_REMOVE
         if eof or condition&GLib.IO_ERR:stop();return GLib.SOURCE_REMOVE
         return GLib.SOURCE_CONTINUE

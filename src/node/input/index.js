@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import path from 'node:path';
 import { ROOT, readJSON, saveJSON } from '../../shared.js';
 import { validateAction, mapPoint, actionLog, ACTIONS } from './actions.js';
+import { assertSafeFocus } from './focus.js';
 import { LinuxInput } from './linux.js';
 export class UnsupportedInput extends EventEmitter {
   async available() { return false; }
@@ -41,6 +42,14 @@ export class InputControl extends EventEmitter {
     if (!this.session || this.now() >= Date.parse(expiresAt) || !await this.available()) { await this.stop('expired or locked during consent', true); throw new Error('Control grant expired or session became unavailable during consent'); }
     return { started: true, grantId, newSession: true };
   }
+  async inspect(raw = {}) {
+    if (!this.session || raw.grantId !== this.session.grantId || this.now() >= Date.parse(this.session.expiresAt) || !await this.available()) throw new Error('Control focus unavailable');
+    const action = validateAction(raw);
+    const point = action.coordinate ? mapPoint(action.coordinate,this.frame) : undefined;
+    const result = await this.backend.inspect(point);
+    if (action.end) result.destination = await this.backend.inspect(mapPoint(action.end,this.frame));
+    return result;
+  }
   async act(raw) {
     this.log(`input attempt ${JSON.stringify({ action: ACTIONS.includes(raw?.action) ? raw.action : 'invalid' })}`);
     try {
@@ -53,17 +62,23 @@ export class InputControl extends EventEmitter {
       if (this.now()-lastAction < 1000) throw new Error('Input rate limit: one action per second');
       if (!this.frame || this.now()-Date.parse(this.frame.capturedAt) > 120000) throw new Error('Take a recent screenshot before input');
       const mapped = { ...action, ...(action.coordinate ? { point: mapPoint(action.coordinate,this.frame) } : {}), ...(action.end ? { destination: mapPoint(action.end,this.frame) } : {}) };
+      const observed = await this.backend.inspect(mapped.point);
+      assertSafeFocus(observed,action,raw.expectedFocus);
+      if (mapped.destination) assertSafeFocus(await this.backend.inspect(mapped.destination),action,raw.expectedFocus);
+      if(this.session!==s || this.busy || this.now()>=Date.parse(s.expiresAt) || s.state.count>=s.maxActions) throw new Error('Control session changed during focus check');
+      if(this.now()-(this.state.lastActionAt??-Infinity)<1000) throw new Error('Input rate limit: one action per second');
+      mapped.expectedFocus = raw.expectedFocus;
       this.busy = true; s.state.last = this.now(); this.state.lastActionAt = this.now(); s.state.count++; this.save();
       await this.backend.act(mapped);
       if (this.session !== s) throw new Error('Control session ended during action');
       if (s.state.count >= s.maxActions) await this.stop('action cap',true);
-      return { action: action.action, count: s.state.count };
+      return { action: action.action, count: s.state.count, focus: await this.backend.inspect() };
     } catch (error) {
       // Fixed/validated error messages only; never propagate helper input/stdout.
       this.log(`input failure ${JSON.stringify({ stage:'action', reason: /^(?:Blocked|Unsupported|Invalid|Typed|Coordinates|Screenshot|Take|Input rate|Control)/.test(error.message) ? error.message : 'portal action failed' })}`);
       await this.backend.releaseAll().catch(()=>{});
-      await this.stop('action failure',true);
-      throw new Error('Input action refused or failed; control ended. See node diagnostics.');
+      if (!/^Control focus changed/.test(error.message)) await this.stop('action failure',true);
+      throw new Error(/^(Control focus|Control target|Blocked application)/.test(error.message) ? error.message : 'Input action refused or failed; control ended. See node diagnostics.');
     } finally { this.busy = false; await this.backend.releaseAll().catch(()=>{}); }
   }
   async stop(reason = 'owner off', revoke = false) {

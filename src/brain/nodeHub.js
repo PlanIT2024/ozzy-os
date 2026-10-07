@@ -110,8 +110,8 @@ export class NodeHub extends EventEmitter {
   request(machine, method, params = {}) {
     let n; try { n = this.nodes.get(canonical(machine)); } catch { return Promise.reject(new Error('Invalid machine name')); }
     if (!n?.online || !n.peer || Date.now() - n.lastSeen > this.stale) return Promise.reject(new Error(`Machine ${machine} is offline`));
-    if (!['status','screen','input_start','input_action','input_stop'].includes(method)) return Promise.reject(new Error('Unsupported method'));
-    if (['input_start','input_action'].includes(method) && !n.capabilities?.includes('input')) return Promise.reject(new Error('Machine has no input capability'));
+    if (!['status','screen','input_start','input_action','input_focus','input_stop'].includes(method)) return Promise.reject(new Error('Unsupported method'));
+    if (['input_start','input_action','input_focus'].includes(method) && !n.capabilities?.includes('input')) return Promise.reject(new Error('Machine has no input capability'));
     if (method === 'screen' && !n.capabilities?.includes('screen')) return Promise.reject(new Error('Machine has no screen capability'));
     return new Promise((resolve, reject) => {
       const id = randomUUID(); const timer = setTimeout(() => { this.pending.delete(id); reject(new Error('Node request timed out')); }, ['screen','input_start'].includes(method) ? Math.max(this.timeout, 120000) : this.timeout);

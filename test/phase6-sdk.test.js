@@ -49,7 +49,7 @@ test('real SDK computer steps are approved once, verify with images and never pe
   });
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>server.close(resolve)));
   const screens=new ScreenGrants({root});
-  const runner=new Runner({root,screens,budget:new Budget({file:path.join(root,'data/budget.json'),cap:1}),hub:{list:()=>[{machine:'OZZY-AI',online:true,capabilities:['status','screen','input']}],request:async(_machine,method)=>{if(method==='input_action')actions++;return method==='screen'?capture:{newSession:false};}},
+  const runner=new Runner({root,screens,budget:new Budget({file:path.join(root,'data/budget.json'),cap:1}),hub:{list:()=>[{machine:'OZZY-AI',online:true,capabilities:['status','screen','input']}],request:async(_machine,method)=>{if(method==='input_action')actions++;return method==='screen'?capture:method==='input_focus'?{focused:{app:'Obsidian',window:'fixture',pid:123,windowId:1}}:{newSession:false};}},
     queryFn: args=>query({...args,options:{...args.options,model:'claude-sonnet-4-6',maxTurns:4,env:{...args.options.env,HOME:root,ANTHROPIC_API_KEY:'test-local-only',ANTHROPIC_BASE_URL:`http://127.0.0.1:${server.address().port}`,CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:'1'}}})});
   t.after(()=>runner.close());const timeout=setTimeout(()=>runner.close(),25000);
   try {
@@ -68,7 +68,7 @@ test('real SDK computer steps are approved once, verify with images and never pe
     assert.match(runner.transcript.context('thread'), /blue rectangle/);
   } finally { clearTimeout(timeout); }
   assert.ok(contextChecks >= 4); assert.ok(bridgeChecked);
-  assert.ok(imageSeen,'real SDK must pass image content to the local API');assert.equal(screens.status().captures,3);assert.equal(actions,1);assert.equal(approvals,3);
+  assert.ok(imageSeen,'real SDK must pass image content to the local API');assert.equal(screens.status().captures,3);assert.equal(actions,1);assert.equal(approvals,1);
   const scan=dir=>{for(const entry of fs.readdirSync(dir,{withFileTypes:true})){const file=path.join(dir,entry.name);if(entry.isSymbolicLink())continue;if(entry.isDirectory())scan(file);else{const bytes=fs.readFileSync(file);assert.ok(!bytes.toString().includes('fixture-text-sensitive-marker'),`typed tool text leaked into ${file}`);assert.ok(!bytes.toString().includes(capture.data),`pixels leaked into ${file}`);assert.ok(!/\.(?:png|jpe?g|webp)$/i.test(file));assert.ok(!bytes.subarray(0,8).equals(Buffer.from('89504e470d0a1a0a','hex')));assert.ok(!(bytes[0]===255 && bytes[1]===216));}}};scan(root);
   assert.ok(runner.sessions.thread);
 });

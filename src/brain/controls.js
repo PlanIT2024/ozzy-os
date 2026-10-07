@@ -5,11 +5,12 @@ import { ROOT, readJSON, saveJSON } from '../shared.js';
 import { canonical } from '../../relay/wire.js';
 import { validateAction, actionLog, mapPoint } from '../node/input/actions.js';
 import { validateCapture } from '../node/screen/image.js';
+import { assertSafeFocus, terminalFocus } from '../node/input/focus.js';
 import sharp from '../node/screen/sharp.js';
 export class ControlGrants {
   constructor({root=ROOT,hub,screens,now=()=>Date.now(),cap=Number(process.env.BIT_CONTROL_MAX_ACTIONS??40)}={}){
     if(!Number.isInteger(cap)||cap<1||cap>1000)throw new Error('Invalid control cap');
-    Object.assign(this,{root,hub,screens,now,cap});this.file=path.join(root,'data/controls.json');this.state=readJSON(this.file,{grants:{},previews:{}});this.listeners=new Map();this.timers=new Map();
+    Object.assign(this,{root,hub,screens,now,cap});this.file=path.join(root,'data/controls.json');this.state=readJSON(this.file,{grants:{},previews:{}});this.listeners=new Map();this.timers=new Map();this.warningTimers=new Map();
     hub?.on?.('control_closed',({machine,grantId,reason})=>{
       for(const [thread,g]of Object.entries(this.state.grants))if(!g.revokedAt&&canonical(machine)===g.machine&&(!grantId||grantId===g.id)){
         if(['runtime suspended','disconnect'].includes(reason)){g.runtimeClosedAt=new Date(this.now()).toISOString();try{this.save();this.audit(g,null,'suspended');}catch{console.warn('Control suspension persistence unavailable');}}
@@ -20,12 +21,19 @@ export class ControlGrants {
   }
   save(){saveJSON(this.file,this.state);}
   audit(grant,action,decision,approvalId){fs.mkdirSync(path.join(this.root,'data'),{recursive:true,mode:0o700});fs.appendFileSync(path.join(this.root,'data/audit.log'),JSON.stringify({event:'control',time:new Date(this.now()).toISOString(),machine:grant?.machine,grantId:grant?.id,approvalId,decision,...(action?actionLog(action):{})})+'\n',{mode:0o600});}
-  arm(thread,g){clearTimeout(this.timers.get(thread));const timer=setTimeout(()=>{void this.off(thread,'expired');},Math.max(0,Date.parse(g.expiresAt)-this.now()));timer.unref?.();this.timers.set(thread,timer);}
-  subscribe(thread,notify){this.listeners.set(thread,notify);}
+  async warn(thread,g){
+    if(g.revokedAt||this.state.grants[thread]?.id!==g.id||g.warnedAt||this.now()>=Date.parse(g.expiresAt))return;
+    g.warnedAt=new Date(this.now()).toISOString();this.save();
+    const notify=this.listeners.get(thread)||(this.notifyThread?text=>this.notifyThread(thread,text):null);
+    if(!notify){delete g.warnedAt;this.save();return;}
+    await notify(`⚠️ Control on ${g.machine} expires in 2 minutes. Finish safely or hand back to Ozzy.`);
+  }
+  arm(thread,g){clearTimeout(this.warningTimers.get(thread));if(!g.warnedAt&&this.now()<Date.parse(g.expiresAt)){const warning=setTimeout(()=>{void this.warn(thread,g).catch(()=>console.warn('Control expiry warning unavailable'));},Math.max(0,Date.parse(g.expiresAt)-this.now()-120000));warning.unref?.();this.warningTimers.set(thread,warning);}clearTimeout(this.timers.get(thread));const timer=setTimeout(()=>{void this.off(thread,'expired');},Math.max(0,Date.parse(g.expiresAt)-this.now()));timer.unref?.();this.timers.set(thread,timer);}
+  subscribe(thread,notify){this.listeners.set(thread,notify);const g=this.active(thread);if(g&&!g.warnedAt)this.arm(thread,g);}
   isTainted(thread,web,sessionKey){return Boolean(web.session(sessionKey||thread).tainted);}
   grant(thread){const g=this.state.grants[thread];if(!g||g.revokedAt)throw new Error('No active control grant here, Ozzy. Use /control on in this thread.');if(this.now()>=Date.parse(g.expiresAt)||!Number.isFinite(Date.parse(g.expiresAt)))throw new Error('Control grant expired, Ozzy.');if(g.count>=g.maxActions)throw new Error('Control action cap reached, Ozzy.');return g;}
   active(thread){try{return this.grant(thread);}catch{return null;}}
-  describe(thread){try{const g=this.grant(thread);return `Control: ${g.machine} until ${g.expiresAt} · ${g.count}/${g.maxActions} steps · every step needs ✅ · preview ${this.state.previews[thread]?'on':'off'}.`;}catch(error){return error.message;}}
+  describe(thread){try{const g=this.grant(thread);return `Control: ${g.machine} until ${g.expiresAt} · ${g.count}/${g.maxActions} steps · input steps need ✅; screenshots automatic · preview ${this.state.previews[thread]?'on':'off'}.`;}catch(error){return error.message;}}
   preview(thread,value){this.state.previews[thread]=Boolean(value);this.save();}
   async on(thread,machine,{withScreen=false,tainted=false}={}){
     if(tainted)throw new Error('Web-tainted threads cannot control a computer, Ozzy. Start a fresh thread.');
@@ -42,14 +50,14 @@ export class ControlGrants {
   }
   async off(thread,reason='owner off',send=true,expectedId){
     const g=this.state.grants[thread];if(!g||g.revokedAt||(expectedId&&g.id!==expectedId))return;
-    g.revokedAt=new Date(this.now()).toISOString();g.reason=reason;clearTimeout(this.timers.get(thread));try{this.save();this.audit(g,null,'off');}catch{console.warn('Control revocation persistence failed; stopping node anyway');}
+    g.revokedAt=new Date(this.now()).toISOString();g.reason=reason;clearTimeout(this.timers.get(thread));clearTimeout(this.warningTimers.get(thread));try{this.save();this.audit(g,null,'off');}catch{console.warn('Control revocation persistence failed; stopping node anyway');}
     if(send)await this.hub.request(g.machine,'input_stop',{grantId:g.id}).catch(()=>{});
     const notify=this.listeners.get(thread)|| (this.notifyThread ? text=>this.notifyThread(thread,text) : ()=>{});
-    await Promise.resolve(notify(`🖱️ control ended on ${g.machine}: ${g.count} approved steps (completed: ${g.actions.join(', ')||'none'}${g.pendingAction ? '; unverified: '+g.pendingAction : ''}). ${reason}.`)).catch(()=>console.warn('Control end notification unavailable')); 
+    await Promise.resolve(notify(`🖱️ control ended on ${g.machine}: ${g.count} steps (completed: ${g.actions.join(', ')||'none'}${g.pendingAction ? '; unverified: '+g.pendingAction : ''}). ${reason}.`)).catch(()=>console.warn('Control end notification unavailable'));
   }
   async close(){
     for(const g of Object.values(this.state.grants))if(!g.revokedAt){await this.hub.request(g.machine,'input_stop',{grantId:g.id,revoke:false}).catch(()=>{});try{this.audit(g,null,'suspended');}catch{console.warn('Control suspension audit unavailable');}}
-    for(const timer of this.timers.values())clearTimeout(timer);
+    for(const timer of [...this.timers.values(),...this.warningTimers.values()])clearTimeout(timer);
   }
   context({thread,scheduled=false,tainted=()=>false,approve=async()=>false,notify=async()=>{},screen}){
     let stopped=false,frame=null,reservation=null;const generation=this.active(thread)?.id;const receipts=new Map();
@@ -75,17 +83,23 @@ export class ControlGrants {
         if(reservation)throw new Error('Wait for the current control step to finish before proposing another.');
         ticket=reservation={key:receiptKey(raw)};
         const observedFrame=frame;
-        approvalId=randomUUID();
-        const details=[`${action.action} on ${g.machine}`,`Target: ${raw.target}`,...(action.coordinate?[`Coordinates: ${action.coordinate.join(', ')}${action.end?' → '+action.end.join(', '):''}`]:[]),...(action.keys?[`Keys: ${action.keys}`]:[]),...(action.direction?[`Scroll: ${action.direction} ${action.amount}`]:[]),...(action.action==='type'?[`Exact text:\n${action.text}`]:[])].join('\n');
+        let focus;
+        if(action.action!=='screenshot'){
+          focus=await this.hub.request(g.machine,'input_focus',{grantId:g.id,...action});
+          assertSafeFocus(focus,action,['key','type'].includes(action.action)?focus.focused:undefined);
+          if(action.end)assertSafeFocus(focus.destination,action);
+        }
+        approvalId=action.action==='screenshot'?undefined:randomUUID();
+        const details=[...(terminalFocus(focus?.focused)?['⚠️ Typing into a terminal runs commands.']:[]),`Focused: ${focus?.focused?.app ?? 'unknown'} — ${focus?.focused?.window ?? 'unknown'}`,...(action.coordinate?[`At target: ${focus?.target?.app ?? 'unknown'} — ${focus?.target?.window ?? 'unknown'}`]:[]),`${action.action} on ${g.machine}`,`Target: ${raw.target}`,...(action.coordinate?[`Coordinates: ${action.coordinate.join(', ')}${action.end?' → '+action.end.join(', '):''}`]:[]),...(action.keys?[`Keys: ${action.keys}`]:[]),...(action.direction?[`Scroll: ${action.direction} ${action.amount}`]:[]),...(action.action==='type'?[`Exact text:\n${action.text}`]:[])].join('\n');
         let preview;
         if(this.state.previews[thread]&&frame&&action.coordinate){const bytes=validateCapture(frame),[x,y]=action.coordinate;const left=Math.max(0,Math.min(frame.scaled.width-1,Math.floor(x)-80)),top=Math.max(0,Math.min(frame.scaled.height-1,Math.floor(y)-60));preview=await sharp(bytes).extract({left,top,width:Math.min(160,frame.scaled.width-left),height:Math.min(120,frame.scaled.height-top)}).png().toBuffer();}
         await notify(`Intent: ${action.action} · ${raw.target}`);
-        const allowed=await approve({tool:'computer',action:'Computer',description:details,input:{machine:g.machine,target:raw.target,...action},approvalId,signal,preview});
+        const allowed=action.action==='screenshot'||await approve({tool:'computer',action:'Computer',description:details,input:{machine:g.machine,target:raw.target,...action,focus},approvalId,signal,preview});
         if(!allowed||signal?.aborted){stopped=true;await this.off(thread,'step denied',true,generation);throw new Error('Step denied; task ended. Ask Ozzy what to do instead.');}
         if(frame!==observedFrame)throw new Error('Screen changed during approval; inspect again.');
         if(gate(raw.machine).id!==g.id)throw new Error('Control grant changed during approval.');
-        this.screens.checkCap();this.audit(g,action,'approved',approvalId);
-        const key=receiptKey(raw);receipts.set(key,[...(receipts.get(key)||[]),{g,action,approvalId,frame:observedFrame,ticket}]);
+        this.screens.checkCap();this.audit(g,action,action.action==='screenshot'?'allowed':'approved',action.action==='screenshot'?undefined:approvalId);
+        const key=receiptKey(raw);receipts.set(key,[...(receipts.get(key)||[]),{g,action,approvalId,frame:observedFrame,ticket,focus}]);
       }catch(error){if(reservation===ticket)reservation=null;this.audit(g,action,'denied',approvalId);throw error;}
     };
     const execute=async raw=>{
@@ -101,17 +115,20 @@ export class ControlGrants {
         if(action.action!=='screenshot'){
           const started=await this.hub.request(g.machine,'input_start',{grantId:g.id,expiresAt:g.expiresAt,maxActions:g.maxActions});
           skipped=started.newSession===true;delete g.runtimeClosedAt;this.save();
-          if(!skipped){g.count++;g.pendingAction=action.action;this.save();await this.hub.request(g.machine,'input_action',{grantId:g.id,...action});g.actions.push(action.action);delete g.pendingAction;this.save();}
+          if(!skipped){g.count++;g.pendingAction=action.action;this.save();await this.hub.request(g.machine,'input_action',{grantId:g.id,...action,expectedFocus:receipt.focus?.focused});g.actions.push(action.action);delete g.pendingAction;this.save();}
         }
+        if(action.action==='screenshot'){g.count++;this.save();}
         const result=await screen.capture(g.machine);
         if(result.isError)throw new Error('Verification screenshot failed; stop and ask Ozzy.');
+        if(action.action==='screenshot'){g.actions.push('screenshot');this.save();}
         const text=result.content.find(block=>block.type==='text'),image=result.content.find(block=>block.type==='image');
         const metadata=JSON.parse(text.text);frame={...metadata,data:image.data,mimeType:image.mimeType,bytes:Buffer.from(image.data,'base64').length};
+        if(action.action!=='screenshot'){const actual=await this.hub.request(g.machine,'input_focus',{grantId:g.id,action:'screenshot'}).catch(()=>null);result.content.unshift({type:'text',text:`Reported focused application after action: ${actual?.focused?.app??'unknown'} — ${actual?.focused?.window??'unknown'}. Verify this matches the intended application before proposing type/key. If unexpected, stop and report; do not repair in another app.`});}
         this.audit(g,action,skipped?'restored_without_input':'executed',receipt.approvalId);
         if(skipped)result.content.unshift({type:'text',text:'Control session restored; no input was sent. Inspect this fresh screenshot and request a new step approval.'});
         if(g.count>=g.maxActions){stopped=true;await this.off(thread,'action cap',true,generation);}
         return result;
-      }catch(error){stopped=true;await this.off(thread,'control step failed',true,generation);this.audit(g,action,'failed');return{isError:true,content:[{type:'text',text:/grant|capability|Tainted|Scheduled|approval|denied|screen|target|Control|control task/.test(error.message)?error.message:'Control ended after a failed step, Ozzy. What should I do instead?'}]};}
+      }catch(error){if(/^Control focus changed/.test(error.message)){frame=null;delete g.pendingAction;this.save();this.audit(g,action,'focus_changed');return{isError:true,content:[{type:'text',text:error.message+' Take a fresh screenshot and ask for a new approval.'}]};}stopped=true;await this.off(thread,'control step failed',true,generation);this.audit(g,action,'failed');return{isError:true,content:[{type:'text',text:/grant|capability|Tainted|Scheduled|approval|denied|screen|target|Control|control task|focus|Blocked application/.test(error.message)?error.message:'Control ended after a failed step, Ozzy. What should I do instead?'}]};}
       finally{if(receipt?.ticket===reservation)reservation=null;}
     };
     return {authorize,execute,gate,end:async reason=>{stopped=true;await this.off(thread,reason,true,generation);}};

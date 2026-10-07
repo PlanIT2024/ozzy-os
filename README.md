@@ -300,9 +300,10 @@ Owner commands in a #bit thread or DM:
 - `/control preview state:on` (or `off`) adds a maximum 160×120 target crop to step cards. Crops are created in memory and attached to Discord only when opted in; no local image files are created.
 
 A grant lasts at most ten minutes, never longer than its screen grant, and uses
-`BIT_CONTROL_MAX_ACTIONS=40` by default. Every `computer` call, including its
-initial screenshot, needs Ozzy's ✅ button. Chat text cannot approve. Cards show
-the machine, action, target in words, coordinates/keys and the full exact text
+`BIT_CONTROL_MAX_ACTIONS=40` by default. Every input action needs Ozzy's ✅ button. Computer screenshots under an active
+control grant are automatic and count toward both control and daily screen caps. Chat text cannot approve. Cards show
+the node-reported focused app/window, machine, action, intended target in words,
+coordinates/keys and the full exact text
 for typing. ❌ ends the control task. Web-tainted threads, scheduled jobs, absent/
 expired grants and machines without input are hard denials, regardless of approval.
 Web results revoke an active control grant. Start with `computer` screenshot;
@@ -364,3 +365,32 @@ Monthly cost comes from SDK result messages. Runs serialize; cumulative resumed-
 Discord logs its ready tag and incoming filter decisions. Login/fatal gateway errors log full diagnostics and exit nonzero; disallowed intents include a Developer Portal hint. Node authentication rejections explain which pairing/token settings to inspect. Relay logs never include payloads. `data/` contains personal transcripts, audit/budget/session state and keys; keep it private and backed up. `.env` and all runtime data are gitignored. Memory, skills and schedules themselves are tracked growth artifacts.
 
 Run `npm test` for the complete suite. [PHASE4-PROOF.md](PHASE4-PROOF.md) records scheduling/reminder validation and the live brief. [PHASE2-PROOF.md](PHASE2-PROOF.md) records tests, service/relay proofs, and remaining manual checks. [PROOF.md](PROOF.md) preserves Phase 1 history.
+
+### Focus safety (Phase 6 fixes)
+
+Before each input card the node reads AT-SPI window metadata (application, active
+window title, process ID and accessible window ID). For type/key it checks the
+exact snapshot again at execution, including inside the resident portal helper;
+a changed focus cancels that step and needs a fresh look and a new approval.
+Terminal cards show **⚠️ Typing into a terminal runs commands.** Input cards
+display system focus separately from bIT's intended target. No editable contents
+are read by the focus query.
+
+`CONTROL_BLOCKED_APPS=discord` is the node default (comma-separated,
+case-insensitive app/window matches). All input is denied while a blocked app
+is focused, and pointer actions are also denied if their target/destination is
+blocked. Missing focus and unknown/ambiguous targets fail closed. AT-SPI uses
+[ACTIVE window state](https://gnome.pages.gitlab.gnome.org/at-spi2-core/libatspi/enum.StateType.html)
+and [screen-coordinate hit testing](https://gnome.pages.gitlab.gnome.org/at-spi2-core/libatspi/method.Component.get_accessible_at_point.html).
+Wayland does not provide universal stacking information through AT-SPI; overlapping
+windows or inaccessible apps can therefore refuse a click. A click is allowed
+only inside an unambiguous accessible active window; a lone inactive hit could
+be obscured by an inaccessible app. Switch applications with the launcher or
+ask Ozzy to focus one manually. Ask Ozzy to focus a
+safe app manually if Discord or inaccessible focus blocks the launcher.
+
+After focus-changing clicks bIT must verify the returned focused application
+before proposing type/key. Prefer Super, application name, Enter over guessed
+dock coordinates. Unexpected results mean stop and report, never repair in a
+different app. Each grant posts one warning two minutes before expiry, with its
+warning state persisted across restarts.

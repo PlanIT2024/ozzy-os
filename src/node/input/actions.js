@@ -5,6 +5,7 @@ const names = new Set(['enter','escape','tab','backspace','delete','space','up',
 export function keyNames(combo) {
   if (typeof combo !== 'string' || combo.length > 80) throw new Error('Invalid key combo');
   const keys = combo.toLowerCase().split('+').map(key => aliases[key.trim()] || key.trim());
+  if (keys.length===1 && keys[0]==='super') return keys;
   if (!keys.length || keys.length > 5 || new Set(keys).size !== keys.length || keys.filter(key => !modifiers.has(key)).length !== 1 || keys.some(key => !modifiers.has(key) && !names.has(key) && !/^[a-z0-9]$/.test(key))) throw new Error('Unsupported key combo');
   if (keys.includes('ctrl') && keys.includes('alt') && (keys.includes('delete') || keys.some(key => /^f(?:[1-9]|1[0-2])$/.test(key)))) throw new Error('Blocked system key combo');
   return [...keys.filter(key=>modifiers.has(key)), ...keys.filter(key=>!modifiers.has(key))];
