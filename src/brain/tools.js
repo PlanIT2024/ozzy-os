@@ -30,3 +30,12 @@ export function screenshotTools(screen) {
     tool('screenshot', 'Read-only screenshot of a machine with screen capability. Requires an active owner /screen on grant in this conversation; never available for scheduled jobs. Describe visible facts; do not repeat passwords, tokens, keys or card numbers. Report unclear text honestly.', { machine: z.string().min(1).max(64) }, ({ machine }) => screen.capture(machine)),
   ] });
 }
+
+export function computerTools(control) {
+  return createSdkMcpServer({ name: 'computer', version: '1.0.0', tools: [
+    tool('computer', 'Owner step-approved computer control. First inspect with screenshot. Every action needs the owner button. State target/intent before each step; coordinates use the most recent scaled screenshot. After input a fresh verification screenshot is returned. Stop on login/2FA/payment, sensitive credentials, unexpected screen or denial. Never change security settings.', {
+      machine: z.string().min(1).max(64), action: z.enum(['screenshot','mouse_move','left_click','right_click','double_click','drag','scroll','key','type']), target: z.string().min(1).max(240),
+      coordinate: z.array(z.number()).length(2).optional(), end: z.array(z.number()).length(2).optional(), keys: z.string().max(80).optional(), text: z.string().max(1000).optional(), direction: z.enum(['up','down','left','right']).optional(), amount: z.number().int().min(1).max(20).optional(),
+    }, input => control.execute(input)),
+  ] });
+}

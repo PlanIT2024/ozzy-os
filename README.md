@@ -284,6 +284,79 @@ sessions are bootstrapped from conversational text only. `/reset` clears the
 transcript. Without a grant, system context explains `/screen on` while keeping
 the screenshot tool hidden. See [PHASE5-PROOF.md](PHASE5-PROOF.md).
 
+## Step-approved computer control (Phase 6)
+
+Input is equivalent to shell access: opening a terminal and typing is possible.
+`CONTROL_ENABLED=false` is the default. Linux advertises `input` only with both
+that flag enabled and an available, unlocked screen (`SCREEN_ENABLED=true`).
+macOS and Windows input backends report “not supported yet”.
+
+Owner commands in a #bit thread or DM:
+
+- `/control on machine:OZZY-AI` requires an existing screen grant for that machine.
+- `/control on machine:OZZY-AI with-screen:true` explicitly starts the screen grant too.
+- `/control off` closes input immediately; `/screen off` and `/reset` do the same.
+- `/control status` shows expiry and used/maximum input steps.
+- `/control preview state:on` (or `off`) adds a maximum 160×120 target crop to step cards. Crops are created in memory and attached to Discord only when opted in; no local image files are created.
+
+A grant lasts at most ten minutes, never longer than its screen grant, and uses
+`BIT_CONTROL_MAX_ACTIONS=40` by default. Every `computer` call, including its
+initial screenshot, needs Ozzy's ✅ button. Chat text cannot approve. Cards show
+the machine, action, target in words, coordinates/keys and the full exact text
+for typing. ❌ ends the control task. Web-tainted threads, scheduled jobs, absent/
+expired grants and machines without input are hard denials, regardless of approval.
+Web results revoke an active control grant. Start with `computer` screenshot;
+each input returns another screenshot to verify the result. Screenshot daily
+caps still apply and may stop control before its own action cap.
+
+The installed Agent SDK 0.3.284 exposes MCP tools and `CallToolResult` image
+content, but no native Anthropic computer-use tool definition/configuration in
+its public types. bIT therefore uses a custom `computer` MCP tool with actions
+`screenshot`, `mouse_move`, `left_click`, `right_click`, `double_click`, `drag`,
+`scroll`, `key`, and `type`. Coordinates refer to the latest scaled screenshot.
+The node maps them through the desktop's logical bounding rectangle to each
+selected monitor stream; monitor gaps, out-of-bounds targets and changed/unshared
+monitor geometry are refused. Scroll can optionally position the pointer first.
+Images retain the Phase 5 non-persistent SDK settings and text-only history bridge.
+
+Linux uses [RemoteDesktop](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.RemoteDesktop.html)
+with monitor-only [ScreenCast selection](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.ScreenCast.html).
+The streams provide logical position/size and the stream ID needed by
+`NotifyPointerMotionAbsolute`; bIT never opens or records PipeWire video.
+D-Bus `Notify*` input remains supported in GNOME 50. EIS is recommended upstream
+for high-volume input; direct D-Bus suits this one-step-per-second interface and
+avoids a libei native dependency. The two paths are never mixed.
+
+First control consent uses a focused bIT GTK window, then GNOME's sharing dialog.
+Choose the monitors to control and allow restoring consent when offered.
+`RemoteDesktop.SelectDevices` uses `persist_mode=2`; the single-use restore token
+is replaced after every successful Start and stored mode 0600 in
+`data/control-restore.json`, never logged or committed. ScreenCast persistence
+options are deliberately omitted for this combined session. Registry registration
+uses `com.ozzy.bit-node`, matching the installed desktop file. GNOME's screen-sharing
+indicator and Stop control remain active for the portal session; Stop revokes the
+brain grant and closes input. Restoring valid consent was tested without another
+prompt. Withdrawn permissions or changed monitor selection can prompt again.
+
+Node checks independently block Ctrl+Alt+Delete and Ctrl+Alt+F1–F12, permit
+Super+L, limit typed text to 500 Unicode characters, enforce one input action per
+second, require a screenshot no older than two minutes and persist session counts
+before execution. Keys/buttons are released after actions and on failure, cancel,
+Stop, expiry or disconnect. Storage failures disable input and still close the
+session. Node-side cap reservations are conservative: failed attempts can count.
+`CONTROL_LOG_TEXT=false` logs action kind, coordinates, keys and text length;
+only an explicit `true` logs typed text. Portal diagnostics contain stages,
+response codes, exposed D-Bus errors and helper exit status; tokens and image
+bytes are excluded.
+
+Grant state/expiry/counts live in `data/controls.json`; node reservations in
+`data/node-control.json`. Shutdown/disconnect closes runtime portal access.
+A persisted valid grant can reopen only after a step's button approval; reopening
+returns a fresh screenshot without sending input, so the next action needs a new
+approval. At login, 2FA, payment, credentials or security settings, bIT hands back
+to Ozzy. He stops when the screen differs from expectations. Start/end messages
+and summaries show completed and unverified actions. See [PHASE6-PROOF.md](PHASE6-PROOF.md).
+
 ## Budget, diagnostics and validation
 
 Monthly cost comes from SDK result messages. Runs serialize; cumulative resumed-session costs are charged only once. `BIT_MONTHLY_CAP_USD` gates new calls and sets the SDK's remaining-run budget. An in-flight response can exceed the cap. Unknown spend after an interrupted API run fails closed; reconcile `data/budget.json` before clearing its `uncertain` flag. `TZ` defines month boundaries. Machine status and slash commands need no API spend.

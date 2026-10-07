@@ -32,6 +32,11 @@ export function commands() {
       .addSubcommand(s => s.setName('on').setDescription('Grant 15 minutes of read-only capture').addStringOption(o => o.setName('machine').setDescription('Machine name (optional if just one has screen)')))
       .addSubcommand(s => s.setName('off').setDescription('Revoke this conversation’s screen grant'))
       .addSubcommand(s => s.setName('status').setDescription('Show this conversation’s screen grant')),
+    new SlashCommandBuilder().setName('control').setDescription('Owner step-approved computer input (shell-level access)')
+      .addSubcommand(s => s.setName('on').setDescription('Grant up to 10 minutes; every step needs approval').addStringOption(o => o.setName('machine').setDescription('Machine name')).addBooleanOption(o => o.setName('with-screen').setDescription('Also start the required screen grant')))
+      .addSubcommand(s => s.setName('off').setDescription('Stop input and revoke this grant'))
+      .addSubcommand(s => s.setName('status').setDescription('Show input grant and step count'))
+      .addSubcommand(s => s.setName('preview').setDescription('Attach a small target crop to step cards').addStringOption(o => o.setName('state').setDescription('on or off').setRequired(true).addChoices({name:'on',value:'on'},{name:'off',value:'off'}))),
     new SlashCommandBuilder().setName('schedule').setDescription('Manage bIT scheduled jobs')
       .addSubcommand(s => s.setName('list').setDescription('List jobs and next run times'))
       .addSubcommand(s => s.setName('pause').setDescription('Pause a job').addStringOption(o => o.setName('name').setDescription('Schedule name').setRequired(true)))
@@ -42,7 +47,7 @@ export function commands() {
 }
 export class ApprovalRelay {
   constructor(owner, { timeout = 600000 } = {}) { this.owner = owner; this.timeout = timeout; this.pending = new Map(); }
-  async request(channel, { tool, file, url, action, description, input, diff, signal, approvalId }) {
+  async request(channel, { tool, file, url, action, description, input, diff, signal, approvalId, preview }) {
     if (signal?.aborted) return false;
     const id = approvalId || randomUUID();
     const row = new ActionRowBuilder().addComponents(
@@ -52,8 +57,8 @@ export class ApprovalRelay {
     const review = diff || JSON.stringify({ tool, ...(file ? { file } : {}), ...(action ? { action, description } : {}), ...input }, null, 2);
     const target = url || file || [action, description].filter(Boolean).join(' · ') || tool;
     const label = target?.length > 1700 ? 'Full URL in proposed-operation.json (including query string)' : target;
-    const preview = diff && diff.length <= 1400 && !diff.includes('```') ? `\n\`\`\`diff\n${diff}\n\`\`\`` : '';
-    const message = await channel.send({ flags: MessageFlags.SuppressEmbeds, content: `This needs your say-so, Ozzy: ${action ? label : `${tool} ${label}`}\nExpires in 10 minutes.${preview}`, files: [{ attachment: Buffer.from(review), name: diff ? 'proposed-change.diff' : 'proposed-operation.json' }], components: [row], allowedMentions: { parse: [] } });
+    const diffPreview = diff && diff.length <= 1400 && !diff.includes('```') ? `\n\`\`\`diff\n${diff}\n\`\`\`` : '';
+    const message = await channel.send({ flags: MessageFlags.SuppressEmbeds, content: `This needs your say-so, Ozzy: ${action ? label : `${tool} ${label}`}\nExpires in 10 minutes.${diffPreview}`, files: [{ attachment: Buffer.from(review), name: diff ? 'proposed-change.diff' : 'proposed-operation.json' }, ...(preview ? [{ attachment: preview, name: 'target-preview.png' }] : [])], components: [row], allowedMentions: { parse: [] } });
     return new Promise(resolve => {
       let done = false;
       const finish = async (allowed, reason) => {
@@ -93,13 +98,14 @@ export async function machinesText(hub, onError = () => {}) {
   const machines = hub.list(); if (!machines.length) return 'No machines registered yet. My ring is listening.';
   return (await Promise.all(machines.map(async machine => {
     if (!machine.online) return `${machine.machine} ⚫ offline · last seen ${machine.lastSeen ? new Date(machine.lastSeen).toISOString() : 'never'}`;
-    try { return machineLine(machine.machine, await hub.request(machine.machine, 'status')) + (machine.capabilities?.includes('screen') ? ' · screen available' : ''); }
+    try { return machineLine(machine.machine, await hub.request(machine.machine, 'status')) + (machine.capabilities?.includes('screen') ? ' · screen available' : '') + (machine.capabilities?.includes('input') ? ' · input available (step-approved)' : ''); }
     catch (e) { onError(e, { machine: machine.machine }); return `${machine.machine} 🟡 my status sensor hit a snag. Try again in a moment, Ozzy.`; }
   }))).join('\n');
 }
 export function createDiscord({ runner, hub, budget, scheduler, reminders, env = process.env, auditFile = path.join(ROOT, 'data/audit.log'), client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.DirectMessages], partials: [Partials.Channel] }) }) {
   const owner = env.OWNER_DISCORD_ID, bitChannel = env.BIT_CHANNEL_ID;
   const approvals = new ApprovalRelay(owner);
+  if (runner.controls) runner.controls.notifyThread = async (thread, text) => sendText(await client.channels.fetch(thread), text);
   const fail = (error, context = {}) => {
     console.error('Discord operation failed:', context, error);
     try {
@@ -188,14 +194,36 @@ export function createDiscord({ runner, hub, budget, scheduler, reminders, env =
           if (!runner.screens) throw new Error('Screen grants unavailable');
           const action = interaction.options.getSubcommand();
           if (action === 'status') response = runner.screens.describe(channel.id);
-          else if (action === 'off') { runner.screens.off(channel.id); response = 'Screen access revoked for this conversation, Ozzy.'; }
+          else if (action === 'off') { await runner.controls?.off(channel.id, 'screen off'); runner.screens.off(channel.id); response = 'Screen access revoked for this conversation, Ozzy.'; }
           else if (!channel.isThread() && !channel.isDMBased()) response = 'Use /screen on inside a #bit thread or DM, Ozzy. Grants stay in that conversation.';
           else {
             const requested = interaction.options.getString('machine');
             const available = hub.list().filter(n => n.online && n.capabilities?.includes('screen'));
             const machine = requested ? available.find(n => n.machine.toLowerCase() === requested.toLowerCase()) : available.length === 1 ? available[0] : null;
             if (!machine) response = available.length ? `Choose a machine with /screen on machine:<name>: ${available.map(n => n.machine).join(', ')}` : 'No machine advertises screen right now, Ozzy. SCREEN_ENABLED and a reachable Wayland session are required.';
-            else { runner.screens.on(channel.id, machine.machine); response = `${runner.screens.describe(channel.id)} Read-only; no mouse or keyboard control.`; }
+            else { await runner.controls?.off(channel.id, 'screen grant changed'); runner.screens.on(channel.id, machine.machine); response = `${runner.screens.describe(channel.id)} Read-only; no mouse or keyboard control.`; }
+          }
+          break;
+        }
+        case 'control': {
+          if (!runner.controls) throw new Error('Control grants unavailable');
+          const action = interaction.options.getSubcommand();
+          if (action === 'status') response = runner.controls.describe(channel.id);
+          else if (action === 'off') { await runner.controls.off(channel.id); response = 'Computer control ended in this conversation, Ozzy.'; }
+          else if (!channel.isThread() && !channel.isDMBased()) response = 'Use /control inside a #bit thread or DM, Ozzy.';
+          else if (action === 'preview') { runner.controls.preview(channel.id, interaction.options.getString('state',true) === 'on'); response = `Control preview ${runner.controls.state.previews[channel.id]?'on':'off'}: only small in-memory target crops go on step cards.`; }
+          else {
+            const requested = interaction.options.getString('machine');
+            const available = hub.list().filter(n => n.online && n.capabilities?.includes('input'));
+            const machine = requested ? available.find(n => n.machine.toLowerCase() === requested.toLowerCase()) : available.length === 1 ? available[0] : null;
+            if (!machine) response = available.length ? `Choose an input machine: ${available.map(n=>n.machine).join(', ')}` : 'No machine advertises input control, Ozzy. CONTROL_ENABLED defaults to false.';
+            else {
+              try {
+                runner.controls.subscribe(channel.id, text => sendText(channel,text));
+                await runner.controls.on(channel.id,machine.machine,{ withScreen: interaction.options.getBoolean('with-screen') === true, tainted: Boolean(runner.web?.session(runner.webKeys?.[channel.id] || runner.sessions?.[channel.id] || channel.id).tainted) });
+                response = `🖱️ controlling ${machine.machine}. ${runner.controls.describe(channel.id)} Input is equivalent to shell access; every action waits for your button.`;
+              } catch(error) { response = error.message; }
+            }
           }
           break;
         }
@@ -286,5 +314,5 @@ export function createDiscord({ runner, hub, budget, scheduler, reminders, env =
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href && process.argv.includes('--register')) {
   required(process.env, ['DISCORD_TOKEN', 'DISCORD_APP_ID', 'DISCORD_GUILD_ID']);
   await new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN).put(Routes.applicationGuildCommands(process.env.DISCORD_APP_ID, process.env.DISCORD_GUILD_ID), { body: commands() });
-  console.log('Registered /mood, /machines, /budget, /screen, /schedule and /reset in the configured guild.');
+  console.log('Registered /mood, /machines, /budget, /screen, /control, /schedule and /reset in the configured guild.');
 }

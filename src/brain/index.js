@@ -15,7 +15,7 @@ export async function runBrain({ root = ROOT, env = process.env, runtime = proce
   makeGrowth = options => new Growth(options), makeRunner = options => new Runner(options), makeDiscord = createDiscord, makeScheduler = options => new Scheduler(options), makeReminders = options => new Reminders(options) } = {}) {
   let unlock = () => {}, hub, runner, discord, growth, scheduler, reminders;
   async function cleanup() {
-    try { scheduler?.close(); reminders?.close(); runner?.close(); await growth?.close(); }
+    try { scheduler?.close(); reminders?.close(); await runner?.close(); await growth?.close(); }
     finally { try { discord?.close(); } finally { try { await hub?.close(); } finally { unlock(); } } }
   }
   try {
