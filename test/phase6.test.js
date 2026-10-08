@@ -318,12 +318,12 @@ try:x.check_focus({'action':'left_click'},{'x':1,'y':1});assert False
 except RuntimeError as e:assert str(e)=='blocked_application'
 p.snapshot=lambda point=None:{'focused':f,'target':None,'targetKnown':False}
 try:x.check_focus({'action':'left_click'},{'x':1,'y':1});assert False
-except RuntimeError as e:assert str(e)=='control_target_unknown'
+except RuntimeError as e:assert str(e)=='control_accessibility_unavailable'
 print('focus defense verified')`;
   assert.match(execFileSync('/usr/bin/python3',['-B','-c',code,helper],{encoding:'utf8',stdio:['ignore','pipe','pipe']}),/focus defense verified/);
 });
 
-test('AT-SPI snapshot uses active window metadata and fails closed for overlap or inactive hits',()=>{
+test('AT-SPI snapshot uses focused extents without inner children and distinguishes overlays and focus mismatch',()=>{
   const helper=path.resolve('src/node/input/focus.py');
   const code=`import importlib.util,sys
 s=importlib.util.spec_from_file_location('bit_focus',sys.argv[1]);p=importlib.util.module_from_spec(s);s.loader.exec_module(p)
@@ -333,9 +333,11 @@ class State:
 class Window:
  def __init__(self,name,active,hit):self.name=name;self.active=active;self.hit=hit
  def get_state_set(self):return State(self.active)
+ def get_role(self):return p.Atspi.Role.FRAME
  def get_name(self):return self.name
  def get_id(self):return 42
  def get_component_iface(self):return self
+ def get_extents(self,*args):return type('Rect',(),dict(x=0,y=0,width=100,height=100))()
  def contains(self,*args):return self.hit
  def get_accessible_at_point(self,*args):return self if self.hit else None
 class App:
@@ -352,11 +354,117 @@ w=Window('Real window',True,True);background=Window('Background',False,True)
 p.Atspi.get_desktop=lambda i:Desktop([App('Editor',[w])])
 r=p.snapshot({'x':10,'y':10});assert r['focused']['app']=='Editor' and r['targetKnown']
 p.Atspi.get_desktop=lambda i:Desktop([App('Editor',[w]),App('Other',[background])])
-r=p.snapshot({'x':10,'y':10});assert r['focused']['window']=='Real window' and not r['targetKnown']
+r=p.snapshot({'x':10,'y':10});assert r['focused']['window']=='Real window' and r['targetKnown']
 w.hit=False
-r=p.snapshot({'x':10,'y':10});assert r['target']['app']=='Other' and not r['targetKnown']
+r=p.snapshot({'x':10,'y':10});assert r['target']['app']=='Editor' and r['targetKnown'] and r['targetSource']=='focused-window-extents'
+w.get_extents=lambda *args:type('Rect',(),dict(x=200,y=0,width=100,height=100))()
+r=p.snapshot({'x':10,'y':10});assert r['target']['app']=='Other' and not r['targetKnown'] and r['targetReason']=='focus-mismatch'
+background.get_role=lambda:p.Atspi.Role.POPUP_MENU
+w.get_extents=lambda *args:type('Rect',(),dict(x=0,y=0,width=100,height=100))()
+r=p.snapshot({'x':10,'y':10});assert not r['targetKnown'] and r['targetReason']=='overlapping-windows'
 w.active=False
 assert p.snapshot()['focused'] is None
 print('snapshot verified')`;
   assert.match(execFileSync('/usr/bin/python3',['-B','-c',code,helper],{encoding:'utf8',stdio:['ignore','pipe','pipe']}),/snapshot verified/);
+});
+
+test('lone Super bypasses Discord focus only, remains step approved, and never authorizes following input',async t=>{
+  const root=fixture(t),backend=new Backend();let now=Date.now();
+  const discord={...focus,app:'Discord',window:'#bit - Discord'};backend.observation={focused:discord};
+  const input=new InputControl({root,enabled:true,screen:{available:async()=>true},backend,now:()=>now,log:()=>{}});t.after(()=>input.close());
+  const start=async id=>{await input.start({grantId:id,expiresAt:new Date(now+600000).toISOString(),maxActions:40});input.observe(frame(now));};
+  await start('super');await input.act({grantId:'super',action:'key',keys:'super',expectedFocus:discord});assert.equal(backend.actions.at(-1).keys,'super');assert.equal(input.session.state.count,1);
+  now+=1000;await assert.rejects(input.act({grantId:'super',action:'type',text:'obsidian',expectedFocus:discord}),/Blocked application/);assert.equal(backend.actions.length,1);
+  for(const [i,keys]of ['super+enter','super+l'].entries()){
+    now+=1000;await start('combo-'+i);await assert.rejects(input.act({grantId:'combo-'+i,action:'key',keys,expectedFocus:discord}),/Blocked application/);
+  }
+  for(const text of ['','send as owner'])assert.throws(()=>validateAction({action:'key',keys:'super',text}),/standalone Super/);
+  now+=1000;await start('shell');backend.observation={focused:{...focus,app:'gnome-shell',window:'Main stage',focusKind:'shell-entry',elementId:55}};
+  await input.act({grantId:'shell',action:'type',text:'obsidian',expectedFocus:backend.observation.focused});assert.equal(backend.actions.at(-1).text,'obsidian');
+  now+=1000;backend.observation={focused:{...backend.observation.focused,elementId:56}};
+  await assert.rejects(input.act({grantId:'shell',action:'key',keys:'enter',expectedFocus:{...backend.observation.focused,elementId:55}}),/focus changed/);
+  const b=await brain(t);await b.controls.on('A','OZZY-AI',{withScreen:true});const request=b.hub.request;
+  b.hub.request=async(machine,method,params)=>method==='input_focus'?{focused:discord}:request(machine,method,params);
+  let approvals=0;const context=b.context({approve:async card=>{approvals++;assert.match(card.description,/Focused: Discord/);return true;}});
+  await context.execute({machine:'OZZY-AI',action:'screenshot',target:'desktop'});
+  assert.equal((await context.execute({machine:'OZZY-AI',action:'key',keys:'super',target:'open GNOME search'})).isError,undefined);assert.equal(approvals,1);
+  assert.ok((await context.execute({machine:'OZZY-AI',action:'type',text:'obsidian',target:'search'})).isError);assert.equal(approvals,1);
+});
+
+test('focused extents evidence reaches cards; refusal messages distinguish accessibility, overlap and focus',async t=>{
+  const {assertSafeFocus}=await import('../src/node/input/focus.js');
+  const click={action:'left_click',coordinate:[1,1]};
+  assert.throws(()=>assertSafeFocus({focused:null,focusReason:'missing-accessibility'},click),/does not expose usable accessibility/);
+  assert.throws(()=>assertSafeFocus({...observation,targetKnown:false,targetReason:'overlapping-windows'},click),/overlapping windows/);
+  assert.throws(()=>assertSafeFocus({...observation,targetKnown:false,targetReason:'focus-mismatch'},click),/focus mismatch/);
+  assert.throws(()=>assertSafeFocus({...observation,candidates:[{...focus,app:'Discord'}]},click),/Blocked application/);
+  const b=await brain(t);await b.controls.on('A','OZZY-AI',{withScreen:true});const request=b.hub.request;let card;
+  b.hub.request=async(machine,method,params)=>method==='input_focus'?{...observation,targetSource:'focused-window-extents'}:request(machine,method,params);
+  const context=b.context({approve:async value=>{card=value;return true;}});await context.execute({machine:'OZZY-AI',action:'screenshot',target:'desktop'});
+  await context.execute({machine:'OZZY-AI',action:'left_click',coordinate:[50,50],target:'Obsidian note body'});
+  assert.match(card.description,/focused window extents; inner accessible hit unavailable/);assert.match(card.description,/Focused: Obsidian/);
+});
+
+test('portal Super exception is exact and does not bypass subsequent Discord or focus checks',()=>{
+  const helper=path.resolve('src/node/input/portal.py');
+  const code=`import importlib.util,sys
+s=importlib.util.spec_from_file_location('input_portal',sys.argv[1]);p=importlib.util.module_from_spec(s);s.loader.exec_module(p)
+x=p.Input(None);f={'app':'Discord','window':'#bit','pid':1,'windowId':2}
+p.snapshot=lambda point=None:{'focused':f,'target':None,'targetKnown':False}
+x.check_focus({'action':'key','keys':'super','expectedFocus':f})
+for action in [{'action':'type','text':'obsidian','expectedFocus':f},{'action':'key','keys':'super+enter','expectedFocus':f}]:
+ try:x.check_focus(action);assert False
+ except RuntimeError as e:assert str(e)=='blocked_application'
+try:x.check_focus({'action':'key','keys':'super','text':''});assert False
+except RuntimeError as e:assert str(e)=='invalid_standalone_super'
+f={**f,'app':'gnome-shell','window':'Main stage','focusKind':'shell-entry','elementId':99}
+x.check_focus({'action':'type','text':'obsidian','expectedFocus':f})
+try:x.check_focus({'action':'key','keys':'enter','expectedFocus':{**f,'elementId':98}});assert False
+except RuntimeError as e:assert str(e)=='control_focus_changed'
+for reason,code in [('overlapping-windows','control_overlapping_windows'),('missing-accessibility','control_accessibility_unavailable'),('focus-mismatch','control_target_focus_mismatch')]:
+ p.snapshot=lambda point=None:{'focused':f,'target':None,'targetKnown':False,'targetReason':reason}
+ try:x.check_focus({'action':'left_click'},{'x':1,'y':1});assert False
+ except RuntimeError as e:assert str(e)==code
+print('Super and refusals verified')`;
+  assert.match(execFileSync('/usr/bin/python3',['-B','-c',code,helper],{encoding:'utf8',stdio:['ignore','pipe','pipe']}),/Super and refusals verified/);
+});
+
+test('Shell editable focus is observed from states, not inferred from a preceding Super',()=>{
+  const helper=path.resolve('src/node/input/focus.py');
+  const code=`import importlib.util,sys
+s=importlib.util.spec_from_file_location('bit_focus',sys.argv[1]);p=importlib.util.module_from_spec(s);s.loader.exec_module(p)
+class State:
+ def __init__(self,values):self.values=values
+ def contains(self,value):return value in self.values
+class Node:
+ def __init__(self,name,id,values,role,children=[]):self.name=name;self.id=id;self.values=values;self.role=role;self.children=children
+ def get_name(self):return self.name
+ def get_id(self):return self.id
+ def get_state_set(self):return State(self.values)
+ def get_role(self):return self.role
+ def get_child_count(self):return len(self.children)
+ def get_child_at_index(self,i):return self.children[i]
+ def get_component_iface(self):return None
+ def get_process_id(self):return self.id
+show=p.Atspi.StateType.SHOWING
+entry=Node('DO NOT READ EDITABLE NAME',99,[show,p.Atspi.StateType.FOCUSED,p.Atspi.StateType.EDITABLE],p.Atspi.Role.TEXT)
+# Fail if the query ever reads the editable entry's name/value.
+entry.get_name=lambda:(_ for _ in ()).throw(AssertionError('editable name read'))
+main=Node('Main stage',1,[show],p.Atspi.Role.WINDOW,[entry]);shell=Node('gnome-shell',2,[],p.Atspi.Role.APPLICATION,[main])
+window=Node('#bit - Discord',3,[show,p.Atspi.StateType.ACTIVE],p.Atspi.Role.FRAME);discord=Node('Discord',4,[],p.Atspi.Role.APPLICATION,[window])
+desktop=Node('desktop',0,[],p.Atspi.Role.DESKTOP_FRAME,[shell,discord]);p.Atspi.get_desktop=lambda i:desktop
+r=p.snapshot();assert r['focused']['app']=='gnome-shell' and r['focused']['elementId']==99
+entry.values=[show,p.Atspi.StateType.EDITABLE]
+assert p.snapshot()['focused']['app']=='Discord'
+print('Shell focus verified')`;
+  assert.match(execFileSync('/usr/bin/python3',['-B','-c',code,helper],{encoding:'utf8',stdio:['ignore','pipe','pipe']}),/Shell focus verified/);
+});
+
+test('global Super remains possible without AT-SPI, but following typing reports missing accessibility',async t=>{
+  const root=fixture(t),backend=new Backend();let now=Date.now();backend.inspect=async()=>{throw new Error('accessibility bus unavailable');};
+  const input=new InputControl({root,enabled:true,screen:{available:async()=>true},backend,now:()=>now,log:()=>{}});t.after(()=>input.close());
+  await input.start({grantId:'no-a11y',expiresAt:new Date(now+600000).toISOString(),maxActions:40});input.observe(frame(now));
+  const observed=await input.inspect({grantId:'no-a11y',action:'key',keys:'super'});assert.equal(observed.focused,null);
+  await input.act({grantId:'no-a11y',action:'key',keys:'super'});assert.equal(backend.actions.length,1);
+  now+=1000;await assert.rejects(input.act({grantId:'no-a11y',action:'type',text:'do not send',expectedFocus:focus}),/does not expose usable accessibility/);assert.equal(backend.actions.length,1);
 });

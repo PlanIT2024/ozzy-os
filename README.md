@@ -378,16 +378,52 @@ are read by the focus query.
 
 `CONTROL_BLOCKED_APPS=discord` is the node default (comma-separated,
 case-insensitive app/window matches). All input is denied while a blocked app
-is focused, and pointer actions are also denied if their target/destination is
-blocked. Missing focus and unknown/ambiguous targets fail closed. AT-SPI uses
+is focused, **except an exactly standalone Super key**: it goes to GNOME Shell,
+still requires the owner's button, and does not waive grants, lock, rate or cap
+checks. Combining Super with another key or supplying text does not qualify.
+Following type/key obtains a new focus snapshot and re-checks it at execution;
+Super alone never establishes that search has focus. Shell editable keyboard
+focus is observed from SHOWING/FOCUSED/EDITABLE states and bound to its element ID.
+No editable text or editable accessible name is read.
+
+Pointer actions are also denied if any known window candidate at their target
+or destination matches a blocked app, even if it might be in the background.
+Missing focus fails closed. AT-SPI uses
 [ACTIVE window state](https://gnome.pages.gitlab.gnome.org/at-spi2-core/libatspi/enum.StateType.html)
 and [screen-coordinate hit testing](https://gnome.pages.gitlab.gnome.org/at-spi2-core/libatspi/method.Component.get_accessible_at_point.html).
-Wayland does not provide universal stacking information through AT-SPI; overlapping
-windows or inaccessible apps can therefore refuse a click. A click is allowed
-only inside an unambiguous accessible active window; a lone inactive hit could
-be obscured by an inaccessible app. Switch applications with the launcher or
-ask Ozzy to focus one manually. Ask Ozzy to focus a
-safe app manually if Discord or inaccessible focus blocks the launcher.
+Inside a uniquely focused accessible window, valid top-level extents can supply
+target evidence when an Electron inner hit test returns no child. Cards label
+that fallback explicitly. Ordinary inactive background windows do not alone
+make the active window ambiguous; intersecting modal/popup overlays, uncertain
+focus, inaccessible geometry and targets outside the focused window are refused.
+AT-SPI is not universal compositor stacking/occlusion evidence: unknown overlays
+and transparent windows remain a limitation. Known blocked-window bounds remain
+conservative denials. bIT must inspect the post-action result and stop on surprises.
+Refusals separately identify missing usable accessibility, overlapping windows,
+or focus mismatch, with a suggested next step.
+
+On this machine, toolkit-accessibility was **false**, but Obsidian 1.14.4 already
+exposed its app/window identity and valid 1056×842 frame bounds. Its center-point
+inner hit returned no child. The bounds fallback therefore needs no setting
+change here. Settings and application launches were not changed. If Ozzy later
+chooses fuller accessibility, the global command is:
+
+```sh
+gsettings set org.gnome.desktop.interface toolkit-accessibility true
+```
+
+This asks toolkits to load accessibility modules for the entire desktop; it can
+expose more UI metadata/text to assistive clients and add accessibility processing.
+Apps may need restarting. Revert with the same command ending in `false` (the
+observed original value). Electron also documents automatic assistive-technology
+detection and an app API; Chromium documents `--force-renderer-accessibility`.
+An app-specific alternative, after saving work and fully quitting Obsidian, is
+`/snap/bin/obsidian --force-renderer-accessibility`; it forces renderer tree
+maintenance for that launch, exposing richer UI to accessibility clients and
+adding processing. Neither enabled-setting behavior nor that relaunch was tested
+or performed; top-level Obsidian metadata with the setting false **was** verified.
+See [Electron accessibility](https://www.electronjs.org/docs/latest/tutorial/accessibility)
+and [Chromium accessibility](https://www.chromium.org/developers/design-documents/accessibility/).
 
 After focus-changing clicks bIT must verify the returned focused application
 before proposing type/key. Prefer Super, application name, Enter over guessed

@@ -23,7 +23,10 @@ Never operate bIT’s own approval or grant UI, send grant slash commands, or by
 Control cards report the node's actual focused application and window, separately
 from your intended target. After any click intended to change focus, verify that
 reported app before proposing type/key. Launch apps with Super, type the app name,
-Enter; never guess dock icons. Discord is blocked: ask Ozzy to focus another app
-first if Discord is focused. If input lands somewhere unexpected, stop and report;
+Enter; never guess dock icons. A lone Super key is allowed even while Discord
+is focused, but it still needs ✅. Verify the newly reported Shell editable/search
+focus before proposing type/key; never assume Super changed focus. All other
+Discord input remains blocked. Refusals distinguish missing accessibility,
+overlapping windows and focus mismatch; explain the reported cause to Ozzy. If input lands somewhere unexpected, stop and report;
 never try to clean up or repair in another app. Computer screenshots under an
 active control grant are automatic, count toward caps, and post 📸; input needs ✅.

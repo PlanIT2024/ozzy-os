@@ -168,14 +168,17 @@ class Input:
         self.notify('NotifyPointerMotionAbsolute','udd',(node,x,y))
 
     def check_focus(self, action, point=None):
+        if action.get('action')=='key' and action.get('keys')=='super':
+            if any(key in action for key in ('text','point','destination','coordinate','end','direction','amount')):raise RuntimeError('invalid_standalone_super')
+            return {'focused':None}  # Global Shell shortcut, independent of AT-SPI.
         observed = snapshot(point)
         focused = observed['focused']
-        if not focused: raise RuntimeError('control_focus_unavailable')
+        if not focused: raise RuntimeError('control_'+('overlapping_windows' if observed.get('focusReason')=='overlapping-windows' else 'accessibility_unavailable'))
         blocked = [name.strip().lower() for name in os.environ.get('CONTROL_BLOCKED_APPS', 'discord').split(',') if name.strip()]
-        for record in (focused, observed['target']):
+        for record in (focused, observed['target'], *observed.get('candidates', [])):
             if record and any(name in (record['app'] + ' ' + record['window']).lower() for name in blocked):
                 raise RuntimeError('blocked_application')
-        if point and not observed['targetKnown']: raise RuntimeError('control_target_unknown')
+        if point and not observed['targetKnown']: raise RuntimeError({'overlapping-windows':'control_overlapping_windows','focus-mismatch':'control_target_focus_mismatch'}.get(observed.get('targetReason'),'control_accessibility_unavailable'))
         if action['action'] in ('type', 'key') and focused != action.get('expectedFocus'):
             raise RuntimeError('control_focus_changed')
         return observed
@@ -278,7 +281,7 @@ def main():
             except Exception as error:
                 controller.release()
                 screen.diagnostic('failure',**screen.error_details(error))
-                emit({'id':message.get('id'),'ok':False,'errorCode':'focus_changed' if str(error)=='control_focus_changed' else 'operation_failed'})
+                emit({'id':message.get('id'),'ok':False,'errorCode':{'control_focus_changed':'focus_changed','control_overlapping_windows':'overlapping_windows','control_accessibility_unavailable':'accessibility_unavailable','control_target_focus_mismatch':'target_focus_mismatch','blocked_application':'blocked_application'}.get(str(error),'operation_failed')})
                 if str(error)=='control_focus_changed': continue
                 stop();return GLib.SOURCE_REMOVE
         if eof or condition&GLib.IO_ERR:stop();return GLib.SOURCE_REMOVE

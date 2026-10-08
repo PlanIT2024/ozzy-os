@@ -3,6 +3,7 @@ import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
+import { focusRefusal } from './focus.js';
 import { sessionEnvironment } from '../screen/linux.js';
 const exec = promisify(execFile);
 const focusHelper = fileURLToPath(new URL('./focus.py', import.meta.url));
@@ -31,7 +32,7 @@ export class LinuxInput extends EventEmitter {
         try {
           const message=JSON.parse(line);
           if (message.event==='closed') { this.log('input portal session closed'); this.emit('closed', { source:'portal', reason:'GNOME Stop' }); }
-          else { const p=this.pending.get(message.id); if(p){clearTimeout(p.timer);this.pending.delete(message.id);message.ok ? p.resolve(message.result) : p.reject(new Error(message.errorCode==='focus_changed'?'Control focus changed since approval; no further input sent. Inspect focus and request a new approval.':'RemoteDesktop operation failed'));} }
+          else { const p=this.pending.get(message.id); if(p){clearTimeout(p.timer);this.pending.delete(message.id);message.ok ? p.resolve(message.result) : p.reject(new Error(message.errorCode==='focus_changed'?'Control focus changed since approval (focus mismatch); no further input sent. Inspect focus and request a new approval.':message.errorCode==='blocked_application'?'Blocked application; no input sent. Focus a safe app or use lone Super.':['overlapping_windows','accessibility_unavailable','target_focus_mismatch'].includes(message.errorCode)?focusRefusal({'overlapping_windows':'overlapping-windows','target_focus_mismatch':'focus-mismatch'}[message.errorCode]):'RemoteDesktop operation failed'));} }
         } catch { this.log('input helper invalid response (omitted)'); child.kill(); }
       }
     });

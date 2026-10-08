@@ -1,7 +1,8 @@
 # Phase 6 — step-approved Wayland control
 
 Branch `phase6-control`, based on main `93e2753`. Final validation/deployment:
-2026-10-07. Live consent and Stop proof: 2026-10-06.
+2026-10-08 (latest refinements below). Historical consent and Stop proof:
+2026-10-06; first fixes/deployment: 2026-10-07.
 
 ## Implementation and research
 
@@ -106,7 +107,7 @@ All diagnostic sessions/helpers are closed. Only the stored restore token
 remains in data/control-restore.json, verified mode **0600**; no token value was
 printed. No test screenshots were taken for this consent/Stop proof.
 
-## Validation and deployment
+## Validation and deployment — 2026-10-07 (historical)
 
 **/usr/bin/node --test: 115 passed, 0 failed**, including all existing tests.
 Coverage includes hard denials; exact typed text on cards; owner/button-only
@@ -204,3 +205,112 @@ at the times/PIDs above. Actual `.env` was never edited during this fix:
 **CONTROL_ENABLED=false** is preserved. The authenticated node advertises
 **status, screen**, with no input. Relay/transport/crypto and web policy are
 unchanged.
+
+## Refinements — 2026-10-08 (current deployment)
+
+The owner reports the Discord block and GNOME Stop working live. These refinements
+address standalone Super, Electron frame hit testing and actionable refusals.
+
+### Exact Super exception
+
+A normalized `key: super` with no other keys, text, coordinates or other action
+fields is allowed irrespective of focused app (including Discord or unavailable
+AT-SPI). It still needs ✅ and the existing active grant, screen, unlocked
+session, rate and cap checks. Both the JS node and resident Python helper enforce
+the exact exception. `super+enter`, `super+l`, and Super with even an empty text
+field do not qualify. The exception does not establish new application focus or
+authorize following input. Type/key still obtain real current focus for their
+card and re-check it at execution. Shell keyboard focus can be resolved from
+SHOWING/FOCUSED/EDITABLE entry states even when its Main stage lacks ACTIVE;
+approval binds that element ID too. Editable text/names are never read.
+
+### Real Obsidian investigation
+
+All GUI observations were read-only, from transient `systemd-run --user --wait
+--pipe --collect` services. No focus change, click, key, screenshot, application
+launch/restart or setting write was performed. The foreground remained Terminal
+during the measurements; this is not a claim of a new live Obsidian click test.
+
+Observed with `org.gnome.desktop.interface toolkit-accessibility = false`:
+
+- AT-SPI registered **obsidian**, PID **242874**, window
+  **Untitled 1 - PlanIT OZZY - Obsidian 1.14.4**, SHOWING, one top-level child.
+- Frame role **23**, logical extents **[0,0,1056,842]**; component contains its
+  center **[528,421]**, but `get_accessible_at_point` there returns no child.
+- Discord likewise exposes a named frame and bounds with no center child hit.
+  Thus missing renderer children do not mean the application/window is absent.
+- Other inactive windows, including Nautilus, App Center and Desktop Icons,
+  reported hits covering the same areas. The old hit-count-only logic could
+  therefore call background overlap ambiguous even with a unique active frame.
+- AT-SPI layer/z fields were not useful universal compositor stacking evidence:
+  GTK frames reported layer 7, Electron frames layer 3, and z=0 in this sample.
+- The revised snapshot, at the measured Obsidian center with Terminal actually
+  focused, correctly reported Terminal as the target, not the model's Obsidian
+  belief. Service exit **0**; only metadata was returned.
+
+Focused-frame bounds fallback now allows an interior target when there is a
+uniquely observed active app/window and valid top-level bounds, even without
+inner accessible hit children. The card explicitly labels **focused window
+extents; inner accessible hit unavailable**. Inactive ordinary background windows
+do not alone defeat that evidence. Intersecting modal/popup overlays, uncertain
+focus or geometry, and targets outside the focused frame remain refusals. Any
+known blocked-window candidate at the point/destination still denies input,
+even if that blocked window might be behind the focused app. This deliberately
+keeps the Discord rule conservative. AT-SPI remains unable to prove universal
+Wayland stacking/occlusion or unknown transparent/overlay windows; the fallback
+is frame evidence, not a claim of knowing the inner widget or universal stacking.
+Fresh post-action screenshots/focus and stop-on-surprise guidance remain mandatory.
+
+### Settings and standard accessibility means
+
+No setting change is needed for the Obsidian frame evidence already exposed.
+The installed schema describes toolkit-accessibility as whether toolkits load
+accessibility modules; its current false value was verified again after deployment.
+[Electron documents assistive-technology detection and its accessibility API](https://www.electronjs.org/docs/latest/tutorial/accessibility);
+[Chromium documents the renderer forcing flag](https://www.chromium.org/developers/design-documents/accessibility/).
+Enabling the setting or relaunching Obsidian with that flag was not tested or
+performed, so this proof does not assert what the renderer exposes afterwards.
+If Ozzy elects to enable the global setting, the exact command is:
+
+```sh
+gsettings set org.gnome.desktop.interface toolkit-accessibility true
+```
+
+It asks toolkits across the desktop to load accessibility modules, potentially
+exposing more UI metadata/text to assistive clients and adding processing; apps
+may need restarting. Restore the observed setting with the same command ending
+in `false`. The installed launcher is `/snap/bin/obsidian`; after saving work
+and fully quitting it, the per-launch alternative is:
+
+```sh
+/snap/bin/obsidian --force-renderer-accessibility
+```
+
+It forces renderer accessibility-tree maintenance for that launch, with richer
+UI exposure and processing overhead. Neither command was executed.
+
+### Refusals, tests and deployment
+
+JS/portal refusals now distinguish **missing usable accessibility**,
+**overlapping windows** and **focus mismatch**, with instructions to focus a
+safe app, close an overlay or enable app accessibility. The fixed helper error
+codes survive node-to-brain propagation; no raw helper output or editable text
+is added to them. Model/system/persona guidance explains the lone-Super exception,
+requires fresh observed focus afterwards, and relays the specific refusal cause.
+
+**Full suite `/usr/bin/node --test`: 120 passed, 0 failed.** Five new tests cover:
+Discord Super versus immediate type/key, exact exception fields and combinations,
+Shell entry/element focus changes, independent Python defenses, bounds evidence
+on cards, distinct refusal categories, and unavailable AT-SPI allowing only
+Super. Existing AT-SPI tests now cover bounds-only Electron frames, permitted
+ordinary background frames, modal overlap denials and out-of-focus targets.
+The real SDK image/text persistence and owner-button regressions also pass.
+
+Reinstalled via `/usr/bin/node scripts/services.js install` on Oct 8 at
+**14:58:40 EDT / 18:58:40 UTC**. Both units confirmed active/running on
+`/usr/bin/node`: brain PID **322931**, node PID **322933**. Discord connected
+at 14:58:41; node authenticated at 14:58:42 and advertised
+**status, screen, input**. The owner's current **CONTROL_ENABLED=true** was
+preserved; actual `.env` was not edited. Toolkit-accessibility remains **false**.
+Transport/relay/crypto and web policy are unchanged. No diagnostic control
+session was started for these refinements.

@@ -23,7 +23,10 @@ export function validateAction(input, { screenshot = true } = {}) {
     if (!['up','down','left','right'].includes(input.direction) || !Number.isInteger(input.amount) || input.amount < 1 || input.amount > 20) throw new Error('Invalid scroll');
     result.direction = input.direction; result.amount = input.amount;
   }
-  if (input.action === 'key') result.keys = keyNames(input.keys).join('+');
+  if (input.action === 'key') {
+    result.keys = keyNames(input.keys).join('+');
+    if(result.keys==='super' && ['text','coordinate','end','direction','amount'].some(key=>input[key]!==undefined)) throw new Error('Invalid standalone Super: no text or other action fields allowed');
+  }
   if (input.action === 'type') {
     if (typeof input.text !== 'string' || !input.text.length || [...input.text].length > 500 || /[\x00-\x08\x0b-\x1f\x7f]/.test(input.text)) throw new Error('Typed text must be 1–500 characters without control codes');
     result.text = input.text;
