@@ -36,7 +36,7 @@ test('real SDK computer steps are approved once, verify with images and never pe
     const typeDone=body.messages?.some(message=>Array.isArray(message.content)&&message.content.some(block=>block.type==='tool_use'&&block.name===tool?.name&&block.input?.action==='type'));
     const useTool=Boolean(tool && (!currentImage || (typeRequested && !typeDone)));
     calls++;
-    const content=useTool?{type:'tool_use',id:`toolu_${calls}`,name:tool.name,input:currentImage ? {action:'type',text:'fixture-text-sensitive-marker',target:'test draft',machine:'OZZY-AI'} : {action:'screenshot',target:'inspect fixture desktop',machine:'OZZY-AI'}}:{type:'text',text:currentImage ? 'I see a blue rectangle. Your favorite constellation is Orion.' : 'Your favorite constellation is Orion.'};
+    const content=useTool?{type:'tool_use',id:`toolu_${calls}`,name:tool.name,input:currentImage ? {action:'type',expected_app:'obsidian',text:'fixture-text-sensitive-marker',target:'test draft',machine:'OZZY-AI'} : {action:'screenshot',target:'inspect fixture desktop',machine:'OZZY-AI'}}:{type:'text',text:currentImage ? 'I see a blue rectangle. Your favorite constellation is Orion.' : 'Your favorite constellation is Orion.'};
     const usage={input_tokens:20,output_tokens:10};
     const message={id:`msg_${calls}`,type:'message',role:'assistant',model:body.model || 'claude-sonnet-4-6',content:[content],stop_reason:useTool?'tool_use':'end_turn',stop_sequence:null,usage};
     if(!body.stream){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(message));return;}

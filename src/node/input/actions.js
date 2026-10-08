@@ -1,4 +1,4 @@
-export const ACTIONS = ['screenshot','mouse_move','left_click','right_click','double_click','drag','scroll','key','type'];
+export const ACTIONS = ['screenshot','mouse_move','left_click','right_click','double_click','drag','scroll','key','type','launch_app'];
 const modifiers = new Set(['ctrl','alt','shift','super']);
 const aliases = { control:'ctrl', cmd:'super', meta:'super', win:'super', esc:'escape', return:'enter', del:'delete', spacebar:'space' };
 const names = new Set(['enter','escape','tab','backspace','delete','space','up','down','left','right','home','end','pageup','pagedown','insert', ...Array.from({length:12},(_,i)=>`f${i+1}`)]);
@@ -13,6 +13,8 @@ export function keyNames(combo) {
 export function validateAction(input, { screenshot = true } = {}) {
   if (!input || typeof input !== 'object' || !ACTIONS.includes(input.action) || (!screenshot && input.action === 'screenshot')) throw new Error('Unsupported computer action');
   const result = { action: input.action };
+  if(input.action==='launch_app'){if(typeof input.app!=='string'||!input.app.trim()||input.app.length>160||/[\\/]/.test(input.app))throw new Error('Invalid installed app name or desktop id');result.app=input.app;return result;}
+  if(input.action!=='screenshot'){if(typeof input.expected_app!=='string'||!/^[a-zA-Z0-9._-]{1,160}$/.test(input.expected_app))throw new Error('Control expected_app is required for every input action');result.expected_app=input.expected_app.toLowerCase();}
   const point = value => {
     if (!Array.isArray(value) || value.length !== 2 || value.some(n => !Number.isFinite(n) || n < 0 || n > 100000)) throw new Error('Invalid coordinates');
     return [...value];
@@ -48,5 +50,5 @@ export function mapPoint(point, frame) {
   return { x: logicalX, y: logicalY, monitor: { x: monitor.x, y: monitor.y, width: monitor.width, height: monitor.height, connector: monitor.connector } };
 }
 export function actionLog(input, logText = false) {
-  return { action: input.action, coordinate: input.coordinate, end: input.end, keys: input.keys, direction: input.direction, amount: input.amount, ...(input.action === 'type' ? { textLength: [...input.text].length, ...(logText ? { text: input.text } : {}) } : {}) };
+  return { action: input.action, expected_app:input.expected_app, app:input.action==='launch_app'?input.app:undefined, coordinate: input.coordinate, end: input.end, keys: input.keys, direction: input.direction, amount: input.amount, ...(input.action === 'type' ? { textLength: [...input.text].length, ...(logText ? { text: input.text } : {}) } : {}) };
 }

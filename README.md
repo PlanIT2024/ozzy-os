@@ -430,3 +430,46 @@ before proposing type/key. Prefer Super, application name, Enter over guessed
 dock coordinates. Unexpected results mean stop and report, never repair in a
 different app. Each grant posts one warning two minutes before expiry, with its
 warning state persisted across restarts.
+
+### Round 3: expected-app binding, app launch and delivery receipts
+
+Every computer input call requires `expected_app` (use the intended real app
+identifier reported with screenshots, e.g. `obsidian`; ordinary identifiers
+match the AT-SPI application name case-insensitively). For overview search use
+`gnome-shell-search`. The node compares it before an approval card exists. Cards
+show Expected, Actual and the focused app/window, and execution checks again.
+A wrong expected app is a hard refusal, not an approvable discrepancy. A lone
+Super may still bypass the Discord input block, but its expected app must match
+actual current focus; it does not claim the overview already has focus. The node
+also refuses consecutive Super presses. Missing expected_app or inaccessible
+focus cannot produce a Super card anymore.
+
+The search detector reads GNOME 50's `org.gnome.Shell.OverviewActive`, scans the
+visible Shell tree breadth-first, and requires a focused editable text/entry.
+It prunes hidden app-grid branches, expands the former depth-15 limit, and binds
+the entry's D-Bus object path (Shell get_id() values can be zero), along with its
+PID/window snapshot. The overview property is read again after the scan; closing
+it prevents treating fallback application focus as search. This detector's new
+live input verification is pending the owner's presence, as requested; see proof.
+
+`launch_app(app)` is a separate tool under the same active, untainted, unscheduled
+control/screen grants. It resolves installed entries with GioUnix DesktopAppInfo
+(the modern namespace for Gio's desktop app API). Its button card says
+`Launch <Name> (<desktop id>)`. The node re-resolves and fingerprints the actual
+installed desktop file before executing `Gio.AppInfo.launch` inside the graphical
+user session, without accepting CLI arguments, arbitrary paths or URLs. Ambiguous
+names need an exact installed desktop id. Discord desktop identities are blocked.
+Launching a permitted app from Discord does not type/click into Discord; all
+subsequent input remains independently blocked or expected-focus checked. The
+fresh verification screenshot and actual focused app are returned afterwards.
+bIT prefers this tool over keyboard launching, never presses Super twice in a
+row, and stops/explains on refusal without trying variations.
+
+The portal helper emits metadata-only progress before and after each key-down
+accepted by RemoteDesktop. On type/key failure, the thread reports none, partial
+with a confirmed count, or all, using Unicode character counts for type and
+key-down counts for combos. Counts describe portal-confirmed sends, not proof of
+application text insertion. An unacknowledged in-flight call, helper crash or
+connection loss is explicitly **uncertain** with the confirmed lower bound; it
+never falsely reports none. Receipts pass through authenticated node responses,
+failure summaries and audit metadata. No typed text is added to receipts or state.

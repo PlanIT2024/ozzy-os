@@ -46,7 +46,7 @@ export function startNode({ transport = process.env.NODE_TRANSPORT || 'local', u
       if (m.type !== 'req' || typeof m.id !== 'string' || m.id.length > 128) return;
       const sendResult = value => { if (current === peer && current.state === 'open') current.send({ type: 'res', id: m.id, ...value }); };
       if (m.method === 'input_stop') { if (!input.session || m.params?.grantId === input.session.grantId) await input.stop(m.params?.revoke === false ? 'runtime suspended' : 'owner off', m.params?.revoke !== false); return sendResult({ ok: true, result: { stopped: true } }); }
-      if (!['status', 'screen','input_start','input_action','input_focus'].includes(m.method)) return sendResult({ ok: false, error: 'Unsupported method' });
+      if (!['status', 'screen','input_start','input_action','input_focus','input_resolve_app'].includes(m.method)) return sendResult({ ok: false, error: 'Unsupported method' });
       if (m.method === 'screen') log('screen capture attempt stage=node_request');
       if (m.method === 'screen' && !await screen.available({ diagnose: true })) { log('screen capture failure stage=availability'); return sendResult({ ok: false, error: 'Screen capture disabled or graphical session unavailable' }); }
       if (busy) { if (m.method === 'screen') log('screen capture failure stage=busy'); return sendResult({ ok: false, error: 'Status collection busy' }); }
@@ -55,11 +55,12 @@ export function startNode({ transport = process.env.NODE_TRANSPORT || 'local', u
         let result;
         if (m.method === 'screen') { result = await screen.capture(); input.observe(result); }
         else if (m.method === 'input_start') result = await input.start(m.params || {});
+        else if (m.method === 'input_resolve_app') result = await input.resolveApp(m.params || {});
         else if (m.method === 'input_focus') result = await input.inspect(m.params || {});
         else if (m.method === 'input_action') result = await input.act(m.params || {});
         else result = await status();
         sendResult({ ok: true, result });
-      } catch (error) { if (m.method === 'screen') log('screen capture failure stage=node_capture (see helper diagnostics)'); else if (m.method.startsWith('input')) log('input failure stage=node_request'); sendResult({ ok: false, error: m.method.startsWith('input') ? (/^(Control focus|Control target|Blocked application)/.test(error.message) ? error.message : 'Input control refused or failed; check node portal diagnostics') : m.method === 'screen' ? 'Screen capture failed or desktop consent was denied/timed out' : 'Status collection failed' }); }
+      } catch (error) { if (m.method === 'screen') log('screen capture failure stage=node_capture (see helper diagnostics)'); else if (m.method.startsWith('input')) log('input failure stage=node_request'); sendResult({ ok: false, delivery:error.delivery, error: m.method.startsWith('input') ? (/^(Control|Blocked application)/.test(error.message) ? error.message : 'Input control refused or failed; check node portal diagnostics') : m.method === 'screen' ? 'Screen capture failed or desktop consent was denied/timed out' : 'Status collection failed' }); }
       finally { busy = false; }
     });
     current.start();

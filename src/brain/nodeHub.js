@@ -1,3 +1,4 @@
+import { validDelivery } from '../node/input/delivery.js';
 import path from 'node:path';
 import { WebSocketServer } from 'ws';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
@@ -93,10 +94,10 @@ export class NodeHub extends EventEmitter {
       n.capabilities = m.capabilities; this.log(`node ${n.machine} capabilities: ${m.capabilities.join(', ')}`);
     } else if (m.type === 'control_closed') {
       if (typeof m.grantId !== 'string' || m.grantId.length > 80 || typeof m.reason !== 'string' || m.reason.length > 100) throw new Error('Invalid control closure');
-      this.emit('control_closed', { machine: n.machine, grantId: m.grantId, reason: m.reason });
+      this.emit('control_closed', { machine: n.machine, grantId: m.grantId, reason: m.reason,delivery:validDelivery(m.delivery)?m.delivery:undefined });
     } else if (m.type === 'res') {
       const p = this.pending.get(m.id);
-      if (p && p.peer === peer) { this.pending.delete(m.id); clearTimeout(p.timer); if (m.ok === true) p.resolve(m.result); else p.reject(new Error(String(m.error || 'Node request failed'))); }
+      if (p && p.peer === peer) { this.pending.delete(m.id); clearTimeout(p.timer); if (m.ok === true) p.resolve(m.result); else p.reject(Object.assign(new Error(String(m.error || 'Node request failed')),{delivery:validDelivery(m.delivery)?m.delivery:undefined})); }
     } else if (m.type !== 'heartbeat') throw new Error('Invalid application message');
     n.lastSeen = Date.now();
   }
@@ -110,8 +111,8 @@ export class NodeHub extends EventEmitter {
   request(machine, method, params = {}) {
     let n; try { n = this.nodes.get(canonical(machine)); } catch { return Promise.reject(new Error('Invalid machine name')); }
     if (!n?.online || !n.peer || Date.now() - n.lastSeen > this.stale) return Promise.reject(new Error(`Machine ${machine} is offline`));
-    if (!['status','screen','input_start','input_action','input_focus','input_stop'].includes(method)) return Promise.reject(new Error('Unsupported method'));
-    if (['input_start','input_action','input_focus'].includes(method) && !n.capabilities?.includes('input')) return Promise.reject(new Error('Machine has no input capability'));
+    if (!['status','screen','input_start','input_action','input_focus','input_resolve_app','input_stop'].includes(method)) return Promise.reject(new Error('Unsupported method'));
+    if (['input_start','input_action','input_focus','input_resolve_app'].includes(method) && !n.capabilities?.includes('input')) return Promise.reject(new Error('Machine has no input capability'));
     if (method === 'screen' && !n.capabilities?.includes('screen')) return Promise.reject(new Error('Machine has no screen capability'));
     return new Promise((resolve, reject) => {
       const id = randomUUID(); const timer = setTimeout(() => { this.pending.delete(id); reject(new Error('Node request timed out')); }, ['screen','input_start'].includes(method) ? Math.max(this.timeout, 120000) : this.timeout);

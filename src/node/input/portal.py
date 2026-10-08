@@ -32,6 +32,7 @@ class Input:
         self.closed = False
         self.pending = None
         self.wait = None
+        self.delivery = None
         self.token_file = Path(__file__).resolve().parents[3] / 'data/control-restore.json'
 
     def request(self, interface, method, prefix=(), options=None):
@@ -168,22 +169,27 @@ class Input:
         self.notify('NotifyPointerMotionAbsolute','udd',(node,x,y))
 
     def check_focus(self, action, point=None):
-        if action.get('action')=='key' and action.get('keys')=='super':
-            if any(key in action for key in ('text','point','destination','coordinate','end','direction','amount')):raise RuntimeError('invalid_standalone_super')
-            return {'focused':None}  # Global Shell shortcut, independent of AT-SPI.
         observed = snapshot(point)
         focused = observed['focused']
-        if not focused: raise RuntimeError('control_'+('overlapping_windows' if observed.get('focusReason')=='overlapping-windows' else 'accessibility_unavailable'))
+        if not focused: raise RuntimeError('control_accessibility_unavailable')
+        actual='gnome-shell-search' if focused.get('focusKind')=='shell-search' and observed.get('overviewActive') is True else focused['app'].lower()
+        if action.get('expected_app','').lower()!=actual:raise RuntimeError('expected_app_mismatch')
+        if focused['app'].lower()=='gnome-shell' and actual!='gnome-shell-search' and action.get('keys')!='super':raise RuntimeError('shell_search_not_focused')
+        if action.get('action')=='key' and action.get('keys')=='super':
+            if any(key in action for key in ('text','point','destination','coordinate','end','direction','amount')):raise RuntimeError('invalid_standalone_super')
+            return observed
         blocked = [name.strip().lower() for name in os.environ.get('CONTROL_BLOCKED_APPS', 'discord').split(',') if name.strip()]
         for record in (focused, observed['target'], *observed.get('candidates', [])):
             if record and any(name in (record['app'] + ' ' + record['window']).lower() for name in blocked):
                 raise RuntimeError('blocked_application')
         if point and not observed['targetKnown']: raise RuntimeError({'overlapping-windows':'control_overlapping_windows','focus-mismatch':'control_target_focus_mismatch'}.get(observed.get('targetReason'),'control_accessibility_unavailable'))
-        if action['action'] in ('type', 'key') and focused != action.get('expectedFocus'):
+        if focused != action.get('expectedFocus'):
             raise RuntimeError('control_focus_changed')
         return observed
 
     def action(self,action):
+        self.delivery={'state':'none','count':0,'total':len(action.get('text','')) if action.get('action')=='type' else len(action.get('keys','').split('+')) if action.get('action')=='key' else 0,'unit':'characters' if action.get('action')=='type' else 'key presses'}
+        self.progress()
         screen.stage('action')
         layout=screen.availability(self.bus)
         for field in ('point','destination'):
@@ -217,16 +223,28 @@ class Input:
             elif kind=='key':
                 symbols={'ctrl':0xffe3,'alt':0xffe9,'shift':0xffe1,'super':0xffeb,'enter':0xff0d,'escape':0xff1b,'tab':0xff09,'backspace':0xff08,'delete':0xffff,'space':32,'up':0xff52,'down':0xff54,'left':0xff51,'right':0xff53,'home':0xff50,'end':0xff57,'pageup':0xff55,'pagedown':0xff56,'insert':0xff63,**{'f'+str(i):0xffbd+i for i in range(1,13)}}
                 self.check_focus(action)
-                for key in action['keys'].split('+'):self.key(symbols[key] if key in symbols else ord(key),1)
+                for key in action['keys'].split('+'):
+                    self.before_delivery();self.key(symbols[key] if key in symbols else ord(key),1);self.after_delivery()
             elif kind=='type':
                 for char in action['text']:
                     while GLib.MainContext.default().pending():GLib.MainContext.default().iteration(False)
                     self.check_focus(action)
                     code=0xff0d if char=='\n' else 0xff09 if char=='\t' else ord(char) if ord(char)<256 else 0x01000000+ord(char)
-                    self.key(code,1);self.key(code,0)
+                    self.before_delivery();self.key(code,1);self.after_delivery();self.key(code,0)
             elif kind!='mouse_move':raise RuntimeError('unsupported_action')
-            return {'done':True}
+            return {'done':True,'delivery':self.delivery}
         finally:self.release()
+
+    def progress(self):
+        if getattr(self,'request_id',None):emit({'event':'progress','id':self.request_id,'delivery':self.delivery})
+
+    def before_delivery(self):
+        self.delivery['state']='uncertain';self.progress()
+
+    def after_delivery(self):
+        self.delivery['count']+=1
+        self.delivery['state']='all' if self.delivery['count']==self.delivery['total'] else 'partial'
+        self.progress()
 
     def shutdown(self):
         self.release()
@@ -274,14 +292,15 @@ def main():
                 if len(line)>12000:raise RuntimeError('input_too_large')
                 message=json.loads(line);method=message['method']
                 if method=='start':result=controller.start()
-                elif method=='action':result=controller.action(message['params'])
+                elif method=='action':
+                    controller.request_id=message['id'];result=controller.action(message['params'])
                 elif method=='release':controller.release();result={'released':True}
                 else:raise RuntimeError('unsupported_method')
                 emit({'id':message['id'],'ok':True,'result':result})
             except Exception as error:
                 controller.release()
                 screen.diagnostic('failure',**screen.error_details(error))
-                emit({'id':message.get('id'),'ok':False,'errorCode':{'control_focus_changed':'focus_changed','control_overlapping_windows':'overlapping_windows','control_accessibility_unavailable':'accessibility_unavailable','control_target_focus_mismatch':'target_focus_mismatch','blocked_application':'blocked_application'}.get(str(error),'operation_failed')})
+                emit({'id':message.get('id'),'ok':False,'errorCode':{'control_focus_changed':'focus_changed','control_overlapping_windows':'overlapping_windows','control_accessibility_unavailable':'accessibility_unavailable','control_target_focus_mismatch':'target_focus_mismatch','blocked_application':'blocked_application','expected_app_mismatch':'expected_app_mismatch','shell_search_not_focused':'shell_search_not_focused'}.get(str(error),'operation_failed'),'delivery':controller.delivery if message.get('method')=='action' else None})
                 if str(error)=='control_focus_changed': continue
                 stop();return GLib.SOURCE_REMOVE
         if eof or condition&GLib.IO_ERR:stop();return GLib.SOURCE_REMOVE

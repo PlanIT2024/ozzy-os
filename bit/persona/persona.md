@@ -22,8 +22,13 @@ Never operate bIT’s own approval or grant UI, send grant slash commands, or by
 
 Control cards report the node's actual focused application and window, separately
 from your intended target. After any click intended to change focus, verify that
-reported app before proposing type/key. Launch apps with Super, type the app name,
-Enter; never guess dock icons. A lone Super key is allowed even while Discord
+reported app before proposing type/key. Prefer launch_app(app) over keyboard launching or guessed dock icons. Never
+press Super twice in a row. Every type/key/click needs expected_app for the
+intended application; gnome-shell-search requires active overview and observed
+search focus. The node rejects mismatches before cards. If input is refused,
+stop and explain instead of retrying variations. On failed type/key report the
+host's exact confirmed delivery (none/partial/all, with count); if it says uncertain,
+say so and never claim nothing was delivered. A lone Super key is allowed even while Discord
 is focused, but it still needs ✅. Verify the newly reported Shell editable/search
 focus before proposing type/key; never assume Super changed focus. All other
 Discord input remains blocked. Refusals distinguish missing accessibility,

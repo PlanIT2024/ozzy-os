@@ -4,7 +4,8 @@ import json
 import sys
 import gi
 gi.require_version('Atspi', '2.0')
-from gi.repository import Atspi
+from gi.repository import Atspi, Gio, GLib
+from collections import deque
 
 
 def inside(point, bounds):
@@ -13,21 +14,29 @@ def inside(point, bounds):
                 bounds['y'] <= point['y'] < bounds['y'] + bounds['height'])
 
 
+def overview_active():
+    try:
+        bus=Gio.bus_get_sync(Gio.BusType.SESSION,None)
+        return bus.call_sync('org.gnome.Shell','/org/gnome/Shell','org.freedesktop.DBus.Properties','Get',GLib.Variant('(ss)',('org.gnome.Shell','OverviewActive')),None,Gio.DBusCallFlags.NONE,2000,None).unpack()[0] is True
+    except Exception:return None
+
+
 def shell_entry(window):
     """Resolve Shell keyboard focus from states; Main stage need not be ACTIVE."""
-    pending = [(window, 0)]
+    pending = deque([(window, 0)])
     matches = []
     visited = 0
     while pending and visited < 1000:
-        node, depth = pending.pop()
+        node, depth = pending.popleft()
         visited += 1
         states = node.get_state_set()
+        if depth>0 and not states.contains(Atspi.StateType.SHOWING):continue
         if (states.contains(Atspi.StateType.SHOWING) and
                 states.contains(Atspi.StateType.FOCUSED) and
                 states.contains(Atspi.StateType.EDITABLE) and
                 node.get_role() in (Atspi.Role.ENTRY, Atspi.Role.TEXT)):
-            matches.append(node.get_id())
-        if depth < 15:
+            matches.append({'elementId':node.get_id(),'elementPath':getattr(node,'path',None)})
+        if depth < 35:
             for i in range(min(node.get_child_count(), 100)):
                 pending.append((node.get_child_at_index(i), depth + 1))
     return matches[0] if len(matches) == 1 and not pending else None
@@ -36,6 +45,7 @@ def shell_entry(window):
 def snapshot(point=None):
     Atspi.set_timeout(700, 700)
     desktop = Atspi.get_desktop(0)
+    overview=overview_active()
     focused, shell_focused, targets = [], [], []
     windows = []
     incomplete = False
@@ -61,10 +71,10 @@ def snapshot(point=None):
                 active = states.contains(Atspi.StateType.ACTIVE)
                 if active:
                     focused.append(record)
-                if app_name.lower() == 'gnome-shell':
+                if app_name.lower() == 'gnome-shell' and overview is True:
                     entry = shell_entry(window)
                     if entry is not None:
-                        shell_focused.append({**record, 'focusKind': 'shell-entry', 'elementId': entry})
+                        shell_focused.append({**record, 'focusKind': 'shell-search', **entry})
                 hit = False
                 contains = inside(point, bounds)
                 if point and component:
@@ -104,7 +114,10 @@ def snapshot(point=None):
             target, reason = targets[0], 'focus-mismatch'
         else:
             reason = 'missing-accessibility'
-    return {'focused': focus, 'focusReason': focus_reason, 'target': target,
+    if overview is True:
+        if overview_active() is not True:overview=False;focus=None;focus_reason='focus-mismatch'
+        elif not shell_focused:focus=None;focus_reason='missing-accessibility'
+    return {'overviewActive':overview,'focused': focus, 'focusReason': focus_reason, 'target': target,
             'targetKnown': known if point else None, 'targetReason': reason,
             'targetSource': source, 'candidates': targets}
 

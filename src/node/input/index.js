@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import path from 'node:path';
 import { ROOT, readJSON, saveJSON } from '../../shared.js';
 import { validateAction, mapPoint, actionLog, ACTIONS } from './actions.js';
+import { deliveryPlan, deliveryText, validDelivery } from './delivery.js';
 import { assertSafeFocus, shellSuper, focusRefusal } from './focus.js';
 import { LinuxInput } from './linux.js';
 export class UnsupportedInput extends EventEmitter {
@@ -45,13 +46,20 @@ export class InputControl extends EventEmitter {
   async inspect(raw = {}) {
     if (!this.session || raw.grantId !== this.session.grantId || this.now() >= Date.parse(this.session.expiresAt) || !await this.available()) throw new Error('Control focus unavailable');
     const action = validateAction(raw);
+    if(shellSuper(action)&&this.session.state.lastInput==='super')throw new Error('Control refused a consecutive Super press before approval; use launch_app instead');
     const point = action.coordinate ? mapPoint(action.coordinate,this.frame) : undefined;
     const result = await this.backend.inspect(point).catch(error=>{if(shellSuper(action))return{focused:null,focusReason:'missing-accessibility'};throw new Error(focusRefusal('missing-accessibility','focus'));});
     if (action.end) result.destination = await this.backend.inspect(mapPoint(action.end,this.frame)).catch(()=>{throw new Error(focusRefusal('missing-accessibility'));});
+    if(action.action!=='screenshot'){assertSafeFocus(result,action,result.focused);if(result.destination)assertSafeFocus(result.destination,action,result.focused);}
     return result;
+  }
+  async resolveApp(raw){
+    if(!this.session||raw.grantId!==this.session.grantId||this.now()>=Date.parse(this.session.expiresAt)||this.session.state.count>=this.session.maxActions||!await this.available())throw new Error('Control unavailable for app launch');
+    return this.backend.resolveApp(validateAction({action:'launch_app',app:raw.app}).app);
   }
   async act(raw) {
     this.log(`input attempt ${JSON.stringify({ action: ACTIONS.includes(raw?.action) ? raw.action : 'invalid' })}`);
+    let delivery=deliveryPlan(raw),dispatched=false;
     try {
       const action = validateAction(raw, { screenshot: false });
       this.log(`input action ${JSON.stringify(actionLog(action,this.logText))}`);
@@ -60,31 +68,39 @@ export class InputControl extends EventEmitter {
       if (this.session !== s) throw new Error('Control session changed');
       const lastAction = this.state.lastActionAt ?? (s.state.count > 0 ? s.state.last : -Infinity);
       if (this.now()-lastAction < 1000) throw new Error('Input rate limit: one action per second');
-      if (!this.frame || this.now()-Date.parse(this.frame.capturedAt) > 120000) throw new Error('Take a recent screenshot before input');
+      if(action.action==='key'&&action.keys==='super'&&s.state.lastInput==='super')throw new Error('Control refused a consecutive Super press; use launch_app instead');
+      if (action.action!=='launch_app' && (!this.frame || this.now()-Date.parse(this.frame.capturedAt) > 120000)) throw new Error('Take a recent screenshot before input');
       const mapped = { ...action, ...(action.coordinate ? { point: mapPoint(action.coordinate,this.frame) } : {}), ...(action.end ? { destination: mapPoint(action.end,this.frame) } : {}) };
+      if(action.action!=='launch_app'){
       const observed = await this.backend.inspect(mapped.point).catch(error=>{if(shellSuper(action))return{focused:null,focusReason:'missing-accessibility'};throw new Error(focusRefusal('missing-accessibility','focus'));});
       assertSafeFocus(observed,action,raw.expectedFocus);
       if (mapped.destination) assertSafeFocus(await this.backend.inspect(mapped.destination).catch(()=>{throw new Error(focusRefusal('missing-accessibility'));}),action,raw.expectedFocus);
+      }else{const app=await this.backend.resolveApp(action.app);if(JSON.stringify(app)!==JSON.stringify(raw.approvedApp))throw new Error('Control installed app changed since approval');}
       if(this.session!==s || this.busy || this.now()>=Date.parse(s.expiresAt) || s.state.count>=s.maxActions) throw new Error('Control session changed during focus check');
       if(this.now()-(this.state.lastActionAt??-Infinity)<1000) throw new Error('Input rate limit: one action per second');
       mapped.expectedFocus = raw.expectedFocus;
       this.busy = true; s.state.last = this.now(); this.state.lastActionAt = this.now(); s.state.count++; this.save();
-      await this.backend.act(mapped);
+      dispatched=true;const receipt=action.action==='launch_app'?await this.backend.launchApp(raw.approvedApp):await this.backend.act(mapped);
+      delivery=validDelivery(receipt?.delivery)?receipt.delivery:delivery;
+      if(['type','key'].includes(action.action))s.state.lastDelivery=delivery;
+      s.state.lastInput=action.action==='key'&&action.keys==='super'?'super':action.action;this.save();
       if (this.session !== s) throw new Error('Control session ended during action');
       if (s.state.count >= s.maxActions) await this.stop('action cap',true);
-      return { action: action.action, count: s.state.count, focus: await this.backend.inspect().catch(()=>({focused:null,focusReason:'missing-accessibility'})) };
+      return { delivery, action: action.action, count: s.state.count, focus: await this.backend.inspect().catch(()=>({focused:null,focusReason:'missing-accessibility'})) };
     } catch (error) {
+      delivery=validDelivery(error.delivery)?error.delivery:dispatched&&delivery.state==='none'?{...delivery,state:'uncertain'}:delivery;
       // Fixed/validated error messages only; never propagate helper input/stdout.
-      this.log(`input failure ${JSON.stringify({ stage:'action', reason: /^(?:Blocked|Unsupported|Invalid|Typed|Coordinates|Screenshot|Take|Input rate|Control)/.test(error.message) ? error.message : 'portal action failed' })}`);
+      if(Object.hasOwn(this.state.grants,raw?.grantId)){this.state.grants[raw.grantId].lastDelivery=delivery;try{this.save();}catch{}}
+      this.log(`input failure ${JSON.stringify({ stage:'action', delivery, reason: /^(?:Blocked|Unsupported|Invalid|Typed|Coordinates|Screenshot|Take|Input rate|Control)/.test(error.message) ? error.message : 'portal action failed' })}`);
       await this.backend.releaseAll().catch(()=>{});
-      if (!/^Control focus changed/.test(error.message)) await this.stop('action failure',true);
-      throw new Error(/^(Control focus|Control target|Blocked application)/.test(error.message) ? error.message : 'Input action refused or failed; control ended. See node diagnostics.');
+      await this.stop('action failure',true);
+      throw Object.assign(new Error((/^(Control|Blocked application)/.test(error.message)?error.message:'Input action refused or failed; control ended. See node diagnostics.')+(['type','key'].includes(raw?.action)?' '+deliveryText(delivery):'')),{delivery});
     } finally { this.busy = false; await this.backend.releaseAll().catch(()=>{}); }
   }
   async stop(reason = 'owner off', revoke = false) {
     const s = this.session; this.session = null; clearTimeout(this.timer); this.frame = null;
     if (s && revoke) { s.state.revoked = true; try { this.save(); } catch { this.log('input failure stage=persist_revocation; capability disabled'); } }
-    if (s) { this.log(`input ended ${JSON.stringify({grantId:s.grantId,reason,count:s.state.count})}`); this.emit('closed',{grantId:s.grantId,reason,count:s.state.count}); }
+    if (s) { this.log(`input ended ${JSON.stringify({grantId:s.grantId,reason,count:s.state.count})}`); this.emit('closed',{grantId:s.grantId,reason,count:s.state.count,delivery:['action failure','action cap'].includes(reason)&&validDelivery(s.state.lastDelivery)?s.state.lastDelivery:undefined}); }
     await this.backend.releaseAll().catch(()=>{}); await this.backend.stop().catch(()=>{});
   }
   async close() { await this.stop('disconnect'); }

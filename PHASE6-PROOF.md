@@ -1,7 +1,7 @@
 # Phase 6 — step-approved Wayland control
 
 Branch `phase6-control`, based on main `93e2753`. Final validation/deployment:
-2026-10-08 (latest refinements below). Historical consent and Stop proof:
+2026-10-08 (round 3 below; live search/input verification pending owner presence). Historical consent and Stop proof:
 2026-10-06; first fixes/deployment: 2026-10-07.
 
 ## Implementation and research
@@ -206,7 +206,7 @@ at the times/PIDs above. Actual `.env` was never edited during this fix:
 **status, screen**, with no input. Relay/transport/crypto and web policy are
 unchanged.
 
-## Refinements — 2026-10-08 (current deployment)
+## Refinements — 2026-10-08 (historical deployment)
 
 The owner reports the Discord block and GNOME Stop working live. These refinements
 address standalone Super, Electron frame hit testing and actionable refusals.
@@ -314,3 +314,116 @@ at 14:58:41; node authenticated at 14:58:42 and advertised
 preserved; actual `.env` was not edited. Toolkit-accessibility remains **false**.
 Transport/relay/crypto and web policy are unchanged. No diagnostic control
 session was started for these refinements.
+
+## Round 3 — 2026-10-08: deployed fixes; live search/input check pending
+
+### Expected application binding
+
+Every computer input requires `expected_app`, including clicks, key/type, mouse
+movement and scroll. Ordinary identifiers are the actual AT-SPI application name
+(case-insensitive); use `gnome-shell-search` only for verified overview search.
+The node's pre-card `input_focus` validates the declared app against actual focus
+and applies input blocks. The brain repeats that check, then shows Expected,
+Actual and the actual focused app/window. A mismatch returns **none delivered**
+and cannot create a card. Execution independently re-checks declared app and the
+card's PID/window/element snapshot in JS and the resident portal helper.
+
+This directly covers the reported mistake: proposing text for
+`gnome-shell-search` while Obsidian has focus now fails before ✅ exists. A lone
+Super still has the Discord-block exception, but its expected app must match
+actual current focus too; it no longer bypasses missing focus. Consecutive Super
+presses are refused in the node before approval and again at execution. Input refusal stops the task; guidance explicitly
+forbids retrying variations or repairing the result in another app. Screenshots
+now report the actual app identifier to help bIT choose expected_app correctly.
+
+### Search investigation and current verification limit
+
+Primary GNOME 50.1 sources checked:
+
+- [Shell D-Bus interface](https://github.com/GNOME/gnome-shell/blob/50.1/data/dbus-interfaces/org.gnome.Shell.xml): OverviewActive is a real read/write boolean property. Only read operations were used for this investigation.
+- [Overview search entry construction](https://github.com/GNOME/gnome-shell/blob/50.1/js/ui/overviewControls.js).
+- [StEntry accessibility implementation](https://github.com/GNOME/gnome-shell/blob/50.1/src/st/st-entry.c): the wrapper is a PANEL containing an accessible ClutterText child. The source was fetched directly after the web reader could not retrieve that file.
+
+Read-only service-context inspection confirmed OverviewActive **false** during
+this run. Shell's Main stage was FOCUSED but not EDITABLE; the expanded metadata
+traversal encountered many hidden text widgets and reached 1500 visited nodes
+with pending branches. The old depth-15/LIFO/unpruned scan could miss the real
+entry. Shell get_id() values were zero in this sample; its accessible D-Bus path
+was available (`/org/a11y/atspi/accessible/1082` for the inspected object).
+
+The detector now uses breadth-first visible-tree traversal, prunes hidden app
+grid branches, raises the depth bound, requires a focused editable text/entry
+and OverviewActive true, binds the entry's D-Bus path as well as its ID, and
+reads the overview property again after the scan. While overview is active,
+failure to find its focused entry cannot fall back to an ordinary application.
+Type/Enter for gnome-shell-search therefore require both signals.
+
+**Live open-overview typing/Enter verification remains pending.** The owner
+explicitly requested presence and advance notice. Readiness questions were
+sent, but no readiness response arrived during this run. No real input,
+overview state change, application launch or new control session was triggered.
+The detector is source-informed and regression-tested; this proof does not
+claim it has yet been demonstrated against the live focused search entry.
+Proposed announced test: with Ozzy present, open/focus search, send Calculator
+only if the expected-app guard confirms it, and press Enter only after the same
+guard, then close the diagnostic portal session.
+
+### launch_app
+
+A separate SDK tool `launch_app(app)` uses the same owner control/screen grants,
+untainted/unscheduled hard gates, action caps and owner-only ✅ relay. It resolves
+installed apps through GioUnix.DesktopAppInfo/Gio.AppInfo before a card; its card
+shows **Launch <Name> (<desktop id>)**. Approval binds the desktop file's SHA-256
+fingerprint. The node re-resolves and verifies it, then uses Gio's launch API in
+the graphical user environment. No arbitrary paths, URLs or CLI arguments are
+accepted. Discord desktop identities are blocked. Subsequent keyboard/click
+operations still require their own expected focus and approval.
+
+Real read-only resolution from bit-desktop-resolve.service found:
+**Obsidian → obsidian_obsidian.desktop**, with an installed file fingerprint.
+No launch occurred. The namespace was updated to GioUnix after the installed
+PyGObject warned that Gio.DesktopAppInfo is deprecated. Mocked tests exercise
+launching, changed fingerprints, invalid paths/names, Discord refusal, exact
+card text, approval waiting and actual focus reporting. A successful launch
+returns a fresh screenshot and real focused app; it never assumes launch implies
+focus. Prefer launch_app over keyboard launching.
+
+### Delivery receipts and failure reporting
+
+The portal helper emits metadata-only progress before/after each key-down send.
+Successful RemoteDesktop replies increment the confirmed count. Type counts
+Unicode characters; combo keys count key-downs. Responses and failures carry
+none/partial/all with count and total through LinuxInput, the authenticated node
+envelope, NodeHub, thread notices and persisted metadata. Failure closure
+summaries also receive available delivery evidence, avoiding a lone ambiguous
+“unverified: type” when the node knows what it confirmed.
+
+A failure before dispatch or pre-card mismatch reports none. A failure after
+confirmed sends reports the confirmed partial/all count. If a send was in flight
+without its reply, or helper/network loss prevented a receipt, the report is
+explicitly **uncertain**, including the confirmed lower bound if available.
+There is no honest way to infer the final in-flight outcome after connection
+loss; this implementation never invents none/all. Counts prove portal-confirmed
+sends, not that a particular application inserted the intended text. Delivery
+metadata contains no text, image bytes or secrets. All held input is released.
+
+### Tests and current deployment
+
+**Full suite `/usr/bin/node --test`: 126 passed, 0 failed.** Six new tests cover:
+expected-app refusal at node preflight/no-card, matching expected/actual cards,
+active-overview plus focused-search gates, launch approval and fingerprint binding,
+installed desktop resolver safety, delivery none/partial/all notices and state,
+and resident helper acknowledged counts on partial failure. Existing tests were
+updated for mandatory expected_app and stop-on-refusal. Delivery metadata is also
+exercised over the encrypted node/hub path. The real SDK persistence and
+conversation-continuity tests pass.
+
+Final service reinstall: `/usr/bin/node scripts/services.js install`,
+**Oct 8 15:39:47 EDT / 19:39:47 UTC**. Both units active/running on
+`/usr/bin/node`: brain **333222**, node **333223**. Discord connected at
+15:39:48; node authenticated at 15:39:49 with **status, screen, input**.
+Actual `.env` was not edited; **CONTROL_ENABLED=true** is preserved. Relay,
+transport and crypto implementations are unchanged; application RPC metadata
+and methods were added inside the existing authenticated channel. Web policy
+is unchanged. The only remaining requested proof is the conditional live
+search/input test described above.

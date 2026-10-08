@@ -51,9 +51,9 @@ export function createPermissions({ root = ROOT, approve = async () => false, no
     let result;
     try {
       if (signal?.aborted) throw new Error('Request cancelled');
-      if (name === 'mcp__computer__computer') {
+      if (['mcp__computer__computer','mcp__computer__launch_app'].includes(name)) {
         if (!control) throw new Error('Computer control unavailable; tainted and scheduled runs are forbidden.');
-        await control.authorize(input, { signal });
+        await control.authorize(name==='mcp__computer__launch_app'?{...input,action:'launch_app',target:`Launch ${input.app}`}:input, { signal });
         result = { behavior: 'allow', updatedInput: input };
       } else if (name === 'mcp__screens__screenshot') {
         if (!screen) throw new Error('Screenshot access unavailable; scheduled jobs cannot capture screens.');
@@ -122,7 +122,7 @@ export function createPermissions({ root = ROOT, approve = async () => false, no
       }
     } catch (e) { result = { behavior: 'deny', message: e.message }; }
     // Log web queries/URLs for owner review, never file contents or replacement text.
-    if (['mcp__screens__screenshot','mcp__computer__computer'].includes(name)) audit({ tool: name, decision: result.behavior });
+    if (['mcp__screens__screenshot','mcp__computer__computer','mcp__computer__launch_app'].includes(name)) audit({ tool: name, decision: result.behavior });
     else audit({ tool: name, path: input?.file_path || input?.path, skill: input?.skill, query: input?.query, url: input?.url, tainted: web?.session(sessionKey).tainted || false, decision: result.behavior, reason: result.message });
     return result;
   }
@@ -157,7 +157,7 @@ export function createPermissions({ root = ROOT, approve = async () => false, no
         }
         return {};
       }] }],
-      PostToolUseFailure: [{ hooks: [async event => { approved.delete(event.tool_use_id); audit({ tool: event.tool_name, ...(['mcp__screens__screenshot','mcp__computer__computer'].includes(event.tool_name) ? {} : { query: event.tool_input?.query, url: event.tool_input?.url }), tainted: web?.session(sessionKey).tainted || false, decision: 'failed' }); return {}; }] }],
+      PostToolUseFailure: [{ hooks: [async event => { approved.delete(event.tool_use_id); audit({ tool: event.tool_name, ...(['mcp__screens__screenshot','mcp__computer__computer','mcp__computer__launch_app'].includes(event.tool_name) ? {} : { query: event.tool_input?.query, url: event.tool_input?.url }), tainted: web?.session(sessionKey).tainted || false, decision: 'failed' }); return {}; }] }],
     },
   };
 }
