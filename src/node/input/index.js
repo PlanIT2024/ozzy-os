@@ -59,7 +59,8 @@ export class InputControl extends EventEmitter {
   }
   async act(raw) {
     this.log(`input attempt ${JSON.stringify({ action: ACTIONS.includes(raw?.action) ? raw.action : 'invalid' })}`);
-    let delivery=deliveryPlan(raw),dispatched=false;
+    const keyboard=['type','key'].includes(raw?.action);
+    let delivery=keyboard?deliveryPlan(raw):undefined,dispatched=false;
     try {
       const action = validateAction(raw, { screenshot: false });
       this.log(`input action ${JSON.stringify(actionLog(action,this.logText))}`);
@@ -81,20 +82,21 @@ export class InputControl extends EventEmitter {
       mapped.expectedFocus = raw.expectedFocus;
       this.busy = true; s.state.last = this.now(); this.state.lastActionAt = this.now(); s.state.count++; this.save();
       dispatched=true;const receipt=action.action==='launch_app'?await this.backend.launchApp(raw.approvedApp):await this.backend.act(mapped);
-      delivery=validDelivery(receipt?.delivery)?receipt.delivery:delivery;
+      delivery=keyboard&&validDelivery(receipt?.delivery)?receipt.delivery:delivery;
       if(['type','key'].includes(action.action))s.state.lastDelivery=delivery;
       s.state.lastInput=action.action==='key'&&action.keys==='super'?'super':action.action;this.save();
       if (this.session !== s) throw new Error('Control session ended during action');
       if (s.state.count >= s.maxActions) await this.stop('action cap',true);
       return { delivery, action: action.action, count: s.state.count, focus: await this.backend.inspect().catch(()=>({focused:null,focusReason:'missing-accessibility'})) };
     } catch (error) {
-      delivery=validDelivery(error.delivery)?error.delivery:dispatched&&delivery.state==='none'?{...delivery,state:'uncertain'}:delivery;
+      delivery=keyboard?(validDelivery(error.delivery)?error.delivery:dispatched&&delivery?.state==='none'?{...delivery,state:'uncertain'}:delivery):undefined;
       // Fixed/validated error messages only; never propagate helper input/stdout.
-      if(Object.hasOwn(this.state.grants,raw?.grantId)){this.state.grants[raw.grantId].lastDelivery=delivery;try{this.save();}catch{}}
+      if(Object.hasOwn(this.state.grants,raw?.grantId)){if(keyboard)this.state.grants[raw.grantId].lastDelivery=delivery;else delete this.state.grants[raw.grantId].lastDelivery;try{this.save();}catch{}}
       this.log(`input failure ${JSON.stringify({ stage:'action', delivery, reason: /^(?:Blocked|Unsupported|Invalid|Typed|Coordinates|Screenshot|Take|Input rate|Control)/.test(error.message) ? error.message : 'portal action failed' })}`);
       await this.backend.releaseAll().catch(()=>{});
-      await this.stop('action failure',true);
-      throw Object.assign(new Error((/^(Control|Blocked application)/.test(error.message)?error.message:'Input action refused or failed; control ended. See node diagnostics.')+(['type','key'].includes(raw?.action)?' '+deliveryText(delivery):'')),{delivery});
+      const keepGrant=raw?.action==='launch_app'&&error.launchFailure===true&&this.session&&this.now()<Date.parse(this.session.expiresAt)&&this.session.state.count<this.session.maxActions&&!this.faulted;
+      if(!keepGrant)await this.stop('action failure',true);
+      throw Object.assign(new Error((/^(Control|Blocked application)/.test(error.message)?error.message:'Input action refused or failed; control ended. See node diagnostics.')+(['type','key'].includes(raw?.action)?' '+deliveryText(delivery):'')),{delivery,launchFailure:keepGrant});
     } finally { this.busy = false; await this.backend.releaseAll().catch(()=>{}); }
   }
   async stop(reason = 'owner off', revoke = false) {

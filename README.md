@@ -456,14 +456,26 @@ live input verification is pending the owner's presence, as requested; see proof
 control/screen grants. It resolves installed entries with GioUnix DesktopAppInfo
 (the modern namespace for Gio's desktop app API). Its button card says
 `Launch <Name> (<desktop id>)`. The node re-resolves and fingerprints the actual
-installed desktop file before executing `Gio.AppInfo.launch` inside the graphical
-user session, without accepting CLI arguments, arbitrary paths or URLs. Ambiguous
+installed desktop file before using Gio's desktop-manager launch API inside the graphical
+user session, without accepting CLI arguments, arbitrary paths or URLs. Child app
+stdio is separated from the helper's JSON protocol. D-Bus-activatable apps use
+`launch_uris_async` and wait for activation completion (eight-second timeout).
+The installed Obsidian snap establishes its own snap tracking scope; no snap
+flags or app settings are changed. Ambiguous
 names need an exact installed desktop id. Discord desktop identities are blocked.
 Launching a permitted app from Discord does not type/click into Discord; all
 subsequent input remains independently blocked or expected-focus checked. The
 fresh verification screenshot and actual focused app are returned afterwards.
 bIT prefers this tool over keyboard launching, never presses Super twice in a
 row, and stops/explains on refusal without trying variations.
+
+Ordinary launch errors end the current task, retaining the grant's original
+expiry and action cap for a new owner instruction. Safety refusals revoke it.
+Sanitized Gio/D-Bus errors and launcher exit codes reach the model and thread;
+launch notices never include keystroke delivery counts. Only session/locale
+environment variables are passed to apps, excluding bIT/API/Discord credentials.
+See [Gio desktop-manager launch](https://docs.gtk.org/gio-unix/method.DesktopAppInfo.launch_uris_as_manager_with_fds.html)
+and [asynchronous activation](https://docs.gtk.org/gio/method.AppInfo.launch_uris_async.html).
 
 The portal helper emits metadata-only progress before and after each key-down
 accepted by RemoteDesktop. On type/key failure, the thread reports none, partial

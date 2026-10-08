@@ -102,9 +102,10 @@ export class ControlGrants {
         if(gate(raw.machine).id!==g.id)throw new Error('Control grant changed during approval.');
         this.screens.checkCap();this.audit(g,action,action.action==='screenshot'?'allowed':'approved',action.action==='screenshot'?undefined:approvalId);
         const key=receiptKey(raw);receipts.set(key,[...(receipts.get(key)||[]),{g,action,approvalId,frame:observedFrame,ticket,focus,approvedApp}]);
-      }catch(error){if(['type','key'].includes(raw?.action)){error.delivery=deliveryPlan(raw);error.notified=true;await Promise.resolve(notify(`${raw.action} refused before execution. ${deliveryText(error.delivery)} ${error.message} Stop; no retry variations.`)).catch(()=>console.warn('Control refusal notice unavailable'));}if(/^Control (expected|focus|target)|^Blocked|^Invalid/.test(error.message)){stopped=true;await this.off(thread,'input refused',true,generation);}if(reservation===ticket)reservation=null;this.audit(g,action,'denied',approvalId);throw error;}
+      }catch(error){if(raw?.action==='launch_app'&&error.launchFailure===true){stopped=true;error.notified=true;await Promise.resolve(notify(`Launch ${raw.app} failed: ${error.message}. Current task ended; control grant remains active until its original expiry. Stop; do not retry variations.`)).catch(()=>console.warn('Launch failure notice unavailable'));}if(['type','key'].includes(raw?.action)){error.delivery=deliveryPlan(raw);error.notified=true;await Promise.resolve(notify(`${raw.action} refused before execution. ${deliveryText(error.delivery)} ${error.message} Stop; no retry variations.`)).catch(()=>console.warn('Control refusal notice unavailable'));}if(/^Control (expected|focus|target|launch safety)|^Blocked|^Invalid/.test(error.message)){stopped=true;await this.off(thread,'input refused',true,generation);}if(reservation===ticket)reservation=null;this.audit(g,action,'denied',approvalId);throw error;}
     };
     const execute=async raw=>{
+      if(stopped)return{isError:true,content:[{type:'text',text:'This control task ended. Ask Ozzy what to do instead.'}]};
       let g,action,receipt,delivery,dispatched=false;
       try{
         g=gate(raw.machine);receipt=receipts.get(receiptKey(raw))?.shift();
@@ -138,8 +139,14 @@ export class ControlGrants {
           if(!error.notified)await Promise.resolve(notify(`${raw.action} failed. ${deliveryText(confirmed)} Stop; no retry variations.`)).catch(()=>console.warn('Control delivery notice unavailable'));
           error.message+=` ${deliveryText(confirmed)}`;
         }
-        stopped=true;await this.off(thread,'control step failed',true,generation);this.audit(g,action,'failed');
-        return{isError:true,content:[{type:'text',text:/grant|capability|Tainted|Scheduled|approval|denied|screen|target|Control|control task|focus|Blocked application/.test(error.message)?error.message:'Control ended after a failed step, Ozzy. '+deliveryText(error.delivery)+' What should I do instead?'}]};
+        stopped=true;
+        const launch=raw?.action==='launch_app',keepGrant=launch&&error.launchFailure===true&&this.active(thread)?.id===generation;
+        if(launch&&g){delete g.pendingAction;delete g.lastDelivery;this.save();}
+        if(!keepGrant)await this.off(thread,'control step failed',true,generation);
+        this.audit(g,action,'failed');
+        const reason=launch?`Launch ${raw.app} failed: ${error.message}. Current task ended; ${keepGrant?'control grant remains active until its original expiry':'control grant ended'}. Stop; do not retry variations.`:/grant|capability|Tainted|Scheduled|approval|denied|screen|target|Control|control task|focus|Blocked application/.test(error.message)?error.message:'Control ended after a failed step, Ozzy. '+(['type','key'].includes(raw?.action)?deliveryText(error.delivery):'')+' What should I do instead?';
+        if(launch&&!error.notified)await Promise.resolve(notify(reason)).catch(()=>console.warn('Launch failure notice unavailable'));
+        return{isError:true,content:[{type:'text',text:reason}]};
       }
       finally{if(receipt?.ticket===reservation)reservation=null;}
     };

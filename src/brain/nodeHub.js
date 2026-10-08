@@ -97,7 +97,7 @@ export class NodeHub extends EventEmitter {
       this.emit('control_closed', { machine: n.machine, grantId: m.grantId, reason: m.reason,delivery:validDelivery(m.delivery)?m.delivery:undefined });
     } else if (m.type === 'res') {
       const p = this.pending.get(m.id);
-      if (p && p.peer === peer) { this.pending.delete(m.id); clearTimeout(p.timer); if (m.ok === true) p.resolve(m.result); else p.reject(Object.assign(new Error(String(m.error || 'Node request failed')),{delivery:validDelivery(m.delivery)?m.delivery:undefined})); }
+      if (p && p.peer === peer) { this.pending.delete(m.id); clearTimeout(p.timer); if (m.ok === true) p.resolve(m.result); else p.reject(Object.assign(new Error(String(m.error || 'Node request failed')),{delivery:validDelivery(m.delivery)?m.delivery:undefined,launchFailure:m.launchFailure===true})); }
     } else if (m.type !== 'heartbeat') throw new Error('Invalid application message');
     n.lastSeen = Date.now();
   }

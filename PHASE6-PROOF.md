@@ -427,3 +427,91 @@ transport and crypto implementations are unchanged; application RPC metadata
 and methods were added inside the existing authenticated channel. Web policy
 is unchanged. The only remaining requested proof is the conditional live
 search/input test described above.
+
+## Round 4 — installed app launch repair (2026-10-08)
+
+The bit-node journal at **15:42:08–09 EDT** recorded an approved Obsidian
+launch followed by `Control installed app operation failed` and a meaningless
+0/0 uncertain key-press receipt. It did not contain the underlying exception.
+Reproducing the exact LinuxInput/helper path under `systemd-run --user` exposed
+it: the helper returned success JSON, then Obsidian appended its CLI-disabled
+warning to the same stdout pipe. JSON parsing failed, and the catch replaced
+that error with the generic message. No Obsidian setting needs changing.
+
+The standard fix uses GioUnix.DesktopAppInfo's
+[desktop-manager API with explicit child FDs](https://docs.gtk.org/gio-unix/method.DesktopAppInfo.launch_uris_as_manager_with_fds.html).
+Spawned apps receive /dev/null stdio, leaving the helper JSON pipe exclusive.
+The helper checks immediate launcher exit status and reports it numerically.
+The non-snap comparison found another issue: Text Editor is D-Bus-activatable;
+a short-lived synchronous helper could exit before activation completed. It
+now runs Gio's [asynchronous launch API](https://docs.gtk.org/gio/method.AppInfo.launch_uris_async.html)
+with a GLib loop and an eight-second activation timeout. Gio documents that
+this API waits for D-Bus activation and propagates extended errors.
+
+Snap checks on this system: **snapd 2.77.1**, desktop id
+`obsidian_obsidian.desktop`, Exec `/snap/bin/obsidian %U`,
+DBusActivatable=false. Its existing GUI process **242874** belongs to
+`app.slice/snap.obsidian.obsidian-cef38179-2459-46c5-a178-5da2df08846a.scope`.
+The snap establishes its own tracking scope; this failure was not a missing
+snap cgroup or session environment. No snap-specific workaround, flags, or
+settings were introduced. The installed Text Editor entry
+`org.gnome.TextEditor.desktop` uses DBusActivatable=true.
+
+### Live service-context proof
+
+The owner was present and was told before every launch. Diagnostics used a
+transient user service running `/usr/bin/node /tmp/bit-launch-exact.mjs` and the
+real LinuxInput/helper implementation, not a shell-only launch. The wrapper
+logged sanitized metadata only. No mouse/keyboard input, screenshot, image,
+portal control session, or setting change was made for these checks.
+
+- Original Obsidian path: valid JSON followed by a CLI warning, reproducing
+  the generic failure. Corrected `bit-obsidian-final.service`: success,
+  clean 225-character helper JSON, launcher PID **340823**, exit status 0.
+  Obsidian is single-instance; subsequent AT-SPI verification found its
+  existing GUI PID **242874**, **two windows**, in the snap scope above.
+- Original Text Editor comparison accepted activation but later had no
+  D-Bus owner. Corrected `bit-editor-async.service`: `activation-completed`,
+  clean 229-character JSON, service exit 0. A separate user-service D-Bus
+  check returned owner PID **340092** after the helper exited. AT-SPI
+  confirmed `gnome-text-editor`, **one window**. Its process is activated
+  through the user `dbus.service`.
+
+Launching successfully never means focus is assumed: the existing post-launch
+screenshot/focus check and mandatory expected-app input gates remain in place.
+These diagnostics verify launch/activation and windows; no typing into either
+app was attempted.
+
+### Failure behavior and regression coverage
+
+Sanitized Gio/D-Bus domain, native code and specific message, helper exit/signal,
+activation timeout or launcher exit status are logged and carried through the
+existing authenticated application RPC to bIT and the thread. Desktop apps
+receive only session/locale environment variables, excluding bIT/API/Discord
+credentials. Raw app output is not forwarded. Delivery receipts are now created
+only for type/key; launch failures cannot produce 0/0 keystroke notices.
+
+An ordinary launch failure ends only the current task, without automatic retry.
+The same context cannot continue; a new owner instruction can use the remaining
+existing grant. Its original expiry, consumed action count and rate limit remain
+unchanged. This avoids requiring another grant for a recoverable application
+error. Blocked apps, changed approved desktop identity, lock/cap/expiry or other
+safety failures still end control and release held input.
+
+**Full suite `/usr/bin/node --test`: 129 passed, 0 failed.** Three new tests
+cover child-output isolation, async activation completion/error, sanitized error
+and credential filtering, launch failure task/grant behavior, safety revocation,
+held-input release and absence of delivery counts. The existing encrypted
+node/hub test additionally verifies specific launch failure classification and
+message propagation. Existing real SDK and focus/control safety tests pass.
+Sandbox-only test attempts failed due to subprocess/socket EPERM; the complete
+suite was rerun outside the sandbox and passed.
+
+Reinstalled with `/usr/bin/node scripts/services.js install` at
+**16:37:13 EDT / 20:37:13 UTC**. Both active/running on `/usr/bin/node`:
+brain **342861**, node **342863**. Discord reconnected at 16:37:15; node
+recovered from the brief startup ECONNREFUSED and authenticated at 16:37:15,
+advertising **status, screen, input** at 16:37:16.
+Actual `.env` was not edited; **CONTROL_ENABLED=true** is preserved.
+Transport, relay, crypto and web policy implementations are unchanged.
+The older round-3 overview typing proof remains outside this round's live tests.

@@ -8,6 +8,7 @@ import { execFileSync } from 'node:child_process';
 import sharp from 'sharp';
 import { deliveryPlan } from '../src/node/input/delivery.js';
 import { InputControl, UnsupportedInput } from '../src/node/input/index.js';
+import { LinuxInput } from '../src/node/input/linux.js';
 import { validateAction, keyNames, mapPoint } from '../src/node/input/actions.js';
 import { ControlGrants } from '../src/brain/controls.js';
 import { ScreenGrants } from '../src/brain/screens.js';
@@ -20,6 +21,54 @@ import { sodium, nodeKeys, publicHex } from '../src/transport/crypto.js';
 const focus={app:'Obsidian',window:'Test note',pid:123,windowId:1};
 const observation={focused:focus,target:focus,targetKnown:true};
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+test('launch errors preserve safe details and remove credentials from desktop environment',async()=>{
+  const logs=[];let childEnv;
+  const backend=new LinuxInput({log:text=>logs.push(text),getEnvironment:async()=>({PATH:'/usr/bin',DBUS_SESSION_BUS_ADDRESS:'unix:path=/tmp/bus',DISCORD_TOKEN:'private-token',ANTHROPIC_API_KEY:'private-key'}),run:async(_exe,_args,opts)=>{
+    childEnv=opts.env;throw Object.assign(new Error('exec failed'),{code:1,stdout:JSON.stringify({ok:false,error:{code:'gio_error',domain:'g-dbus-error-quark',nativeCode:2,message:'Activation failed: ServiceUnknown token=hidden'}})});
+  }});
+  await assert.rejects(backend.launchApp({id:'fixture.desktop'}),error=>error.launchFailure===true&&/Activation failed: ServiceUnknown/.test(error.message)&&!error.message.includes('hidden'));
+  assert.equal(childEnv.DISCORD_TOKEN,undefined);assert.equal(childEnv.ANTHROPIC_API_KEY,undefined);assert.match(logs.join('\n'),/g-dbus-error-quark/);assert.ok(!logs.join('\n').includes('hidden'));
+});
+
+test('ordinary launch failure ends task but preserves original grant; safety failure revokes it',async t=>{
+  const app={id:'fixture.desktop',name:'Fixture',fingerprint:'a'.repeat(64)};
+  const b=await brain(t);await b.controls.on('A','OZZY-AI',{withScreen:true});const original=b.hub.request,notices=[];
+  b.hub.request=async(machine,method,params)=>method==='input_resolve_app'?app:method==='input_action'?Promise.reject(Object.assign(new Error('Control launch failed: ServiceUnknown'),{launchFailure:true})):original(machine,method,params);
+  const before=b.controls.active('A'),context=b.context({approve:async()=>true,notify:text=>notices.push(text)});
+  const raw={machine:'OZZY-AI',action:'launch_app',app:'Fixture',target:'Launch Fixture'};
+  const result=await context.execute(raw);assert.ok(result.isError);assert.match(result.content[0].text,/ServiceUnknown/);
+  assert.equal(b.controls.active('A').id,before.id);assert.equal(b.controls.active('A').expiresAt,before.expiresAt);assert.equal(b.controls.state.grants.A.pendingAction,undefined);
+  assert.ok(!notices.join('\n').match(/Delivery|key presses/));assert.ok((await context.execute(raw)).isError);assert.equal(b.controls.active('A').id,before.id);
+  b.hub.request=async(machine,method,params)=>method==='input_resolve_app'?app:method==='input_action'?Promise.reject(new Error('Control installed app changed since approval')):original(machine,method,params);
+  assert.ok((await b.context({approve:async()=>true}).execute(raw)).isError);assert.equal(b.controls.active('A'),null);
+  const root=fixture(t),backend=new Backend();backend.resolveApp=async()=>app;backend.launchApp=async()=>{throw Object.assign(new Error('Control launch failed: status 7'),{launchFailure:true});};
+  const input=new InputControl({root,enabled:true,screen:{available:async()=>true},backend,log:()=>{}});t.after(()=>input.close());
+  await input.start({grantId:'launch-failure',expiresAt:new Date(Date.now()+600000).toISOString(),maxActions:40});
+  await assert.rejects(input.act({grantId:'launch-failure',action:'launch_app',app:'Fixture',approvedApp:app}),error=>error.launchFailure===true&&error.delivery===undefined&&!/Delivery|key presses/.test(error.message));
+  assert.ok(input.session);assert.ok(backend.releases);assert.equal(input.session.state.count,1);assert.equal(input.session.state.lastDelivery,undefined);
+});
+
+test('desktop launch isolates noisy child output and waits for asynchronous D-Bus completion',()=>{
+  const code=`import importlib.util,sys,tempfile,pathlib,json
+s=importlib.util.spec_from_file_location('apps',sys.argv[1]);p=importlib.util.module_from_spec(s);s.loader.exec_module(p)
+with tempfile.TemporaryDirectory() as tmp:
+ script=pathlib.Path(tmp)/'noisy.py';script.write_text('print("not JSON from app")\\n')
+ file=pathlib.Path(tmp)/'fixture.desktop';file.write_text('[Desktop Entry]\\nType=Application\\nName=Fixture\\nExec=/usr/bin/python3 '+str(script)+'\\n')
+ info=p.GioUnix.DesktopAppInfo.new_from_filename(str(file));p.Gio.AppInfo.get_all=lambda:[info]
+ approved=p.resolve('Fixture')[1];print(json.dumps(p.launch(approved)))
+ class AsyncApp:
+  def get_boolean(self,key):return True
+  def launch_uris_async(self,uris,context,cancellable,callback,data):p.GLib.idle_add(lambda:callback(self,None))
+  def launch_uris_finish(self,reply):self.finished=True;return True
+ app=AsyncApp();p.resolve=lambda value:(app,approved)
+ assert p.launch(approved)['startup']['state']=='activation-completed' and app.finished
+ app.launch_uris_finish=lambda reply:(_ for _ in ()).throw(RuntimeError('activation_timeout'))
+ try:p.launch(approved);assert False
+ except RuntimeError as error:assert str(error)=='activation_timeout'
+print('async verified')`;
+  const output=execFileSync('/usr/bin/python3',['-B','-c',code,path.resolve('src/node/input/apps.py')],{encoding:'utf8',timeout:12000});
+  assert.ok(!output.includes('not JSON from app'));assert.equal(JSON.parse(output.split('\n')[0]).startup.exitCode,0);assert.match(output,/async verified/);
+});
 async function until(predicate){for(let i=0;i<300;i++){if(predicate())return;await pause(10);}throw new Error('Timed out');}
 function fixture(t){const root=fs.mkdtempSync(path.join(os.tmpdir(),'bit-control-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));return root;}
 class Backend extends EventEmitter {
@@ -155,6 +204,8 @@ test('encrypted node/hub input capability changes and GNOME Stop event end contr
   await until(()=>hub.list()[0].online);assert.ok(!hub.list()[0].capabilities.includes('input'));available=true;await until(()=>hub.list()[0].capabilities.includes('input'));
   assert.ok((await hub.request('OZZY-AI','input_start',{})).started);input.act=async()=>{throw Object.assign(new Error('Control expected-app mismatch'),{delivery:{state:'none',count:0,total:4,unit:'characters'}});};
   await assert.rejects(hub.request('OZZY-AI','input_action',{}),error=>error.delivery?.state==='none'&&error.delivery.total===4);
+  input.act=async()=>{throw Object.assign(new Error('Control launch failed: ServiceUnknown'),{launchFailure:true});};
+  await assert.rejects(hub.request('OZZY-AI','input_action',{}),error=>error.launchFailure===true&&error.delivery===undefined&&/ServiceUnknown/.test(error.message));
   let closed;hub.once('control_closed',event=>closed=event);input.emit('closed',{grantId:'test-grant',reason:'GNOME Stop',count:0});await until(()=>closed);assert.equal(closed.reason,'GNOME Stop');available=false;await until(()=>!hub.list()[0].capabilities.includes('input'));
 });
 
@@ -529,8 +580,8 @@ with tempfile.TemporaryDirectory() as tmp:
  file=pathlib.Path(tmp)/'bit-fixture.desktop';file.write_text('[Desktop Entry]\\nType=Application\\nName=Fixture\\nExec=/usr/bin/true\\n')
  info=p.GioUnix.DesktopAppInfo.new_from_filename(str(file));p.Gio.AppInfo.get_all=lambda:[info]
  approved=p.resolve('Fixture')[1];assert approved['name']=='Fixture'
- calls=[];p.GioUnix.DesktopAppInfo.launch=lambda self,*args:calls.append(args) or True
- p.launch(approved);assert len(calls)==1
+ calls=[];p.GioUnix.DesktopAppInfo.launch_uris_as_manager_with_fds=lambda self,*args:calls.append(args) or True
+ p.launch(approved);assert len(calls)==1 and calls[0][-1] not in (1,2) and calls[0][-2] not in (1,2)
  file.write_text(file.read_text()+'Comment=changed\\n')
  try:p.launch(approved);assert False
  except RuntimeError as e:assert str(e)=='desktop_app_changed_since_approval'
