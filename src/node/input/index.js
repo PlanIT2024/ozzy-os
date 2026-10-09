@@ -1,3 +1,4 @@
+import { NodeTasks } from './tasks.js';
 import { EventEmitter } from 'node:events';
 import path from 'node:path';
 import { ROOT, readJSON, saveJSON } from '../../shared.js';
@@ -15,20 +16,22 @@ export class InputControl extends EventEmitter {
   constructor({ platform = process.platform, enabled = process.env.CONTROL_ENABLED === 'true', screen, backend = platform === 'linux' ? new LinuxInput() : new UnsupportedInput(), now = () => Date.now(), cap = Number(process.env.BIT_CONTROL_MAX_ACTIONS ?? 40), root = ROOT, log = console.log, logText = process.env.CONTROL_LOG_TEXT === 'true' } = {}) {
     super(); if (!Number.isInteger(cap) || cap < 1 || cap > 1000) throw new Error('Invalid control action cap');
     Object.assign(this, { enabled, screen, backend, now, cap, root, log, logText });
-    this.file = path.join(root, 'data/node-control.json'); this.state = readJSON(this.file, { grants: {} });
+    this.file = path.join(root, 'data/node-control.json'); this.state = readJSON(this.file, { grants: {} });this.tasks=new NodeTasks(this);
     backend.on('closed', details => { void this.stop(details?.reason || 'GNOME Stop', true); });
   }
   save() { try { saveJSON(this.file,this.state); } catch { this.faulted=true; throw new Error('Control state persistence failed'); } }
   async available() { return !this.faulted && this.enabled && await this.screen.available() && await this.backend.available(); }
   observe(frame) { this.frame = { original: frame.original, scaled: frame.scaled, monitors: frame.monitors, capturedAt: frame.capturedAt }; }
-  async start({ grantId, expiresAt, maxActions }) {
+  async start({ grantId, expiresAt, maxActions, mode='step' }) {
     if (this.enabled && this.backend instanceof UnsupportedInput) return this.backend.start();
     if (!this.enabled || !await this.available()) throw new Error('Input capability unavailable');
     if (typeof grantId !== 'string' || !/^[a-zA-Z0-9-]{1,80}$/.test(grantId) || !Number.isFinite(Date.parse(expiresAt)) || Date.parse(expiresAt) <= this.now() || Date.parse(expiresAt) > this.now()+600000 || !Number.isInteger(maxActions) || maxActions < 1) throw new Error('Invalid control grant');
+    if(!['step','task'].includes(mode)||this.state.grants[grantId]?.mode&&this.state.grants[grantId].mode!==mode)throw new Error('Control mode cannot change inside a grant');
     if (this.state.grants[grantId]?.revoked) throw new Error('Node control session was revoked');
     if (this.session?.grantId === grantId) return { started: true, grantId, newSession: false };
     await this.stop('replaced');
     const state = Object.hasOwn(this.state.grants,grantId) ? this.state.grants[grantId] : (this.state.grants[grantId] = { count: 0, last: 0 });
+    state.mode ||= mode;
     state.expiresAt ||= expiresAt;
     state.maxActions = Math.min(state.maxActions ?? this.cap, this.cap, maxActions);
     expiresAt = new Date(Math.min(Date.parse(state.expiresAt), Date.parse(expiresAt))).toISOString();
@@ -72,13 +75,16 @@ export class InputControl extends EventEmitter {
       if(action.action==='key'&&action.keys==='super'&&s.state.lastInput==='super')throw new Error('Control refused a consecutive Super press; use launch_app instead');
       if (action.action!=='launch_app' && (!this.frame || this.now()-Date.parse(this.frame.capturedAt) > 120000)) throw new Error('Take a recent screenshot before input');
       const mapped = { ...action, ...(action.coordinate ? { point: mapPoint(action.coordinate,this.frame) } : {}), ...(action.end ? { destination: mapPoint(action.end,this.frame) } : {}) };
+      let observed;
       if(action.action!=='launch_app'){
-      const observed = await this.backend.inspect(mapped.point,{searchFocus:action.action==='focus_search'}).catch(error=>{if(shellSuper(action))return{focused:null,focusReason:'missing-accessibility'};throw new Error(focusRefusal('missing-accessibility','focus'));});
+      observed = await this.backend.inspect(mapped.point,{searchFocus:action.action==='focus_search'}).catch(error=>{if(shellSuper(action))return{focused:null,focusReason:'missing-accessibility'};throw new Error(focusRefusal('missing-accessibility','focus'));});
       assertSafeFocus(observed,action,raw.expectedFocus);
       if (mapped.destination) assertSafeFocus(await this.backend.inspect(mapped.destination).catch(()=>{throw new Error(focusRefusal('missing-accessibility'));}),action,raw.expectedFocus);
-      }else{const app=await this.backend.resolveApp(action.app);if(JSON.stringify(app)!==JSON.stringify(raw.approvedApp))throw new Error('Control installed app changed since approval');}
+      }else{if(s.state.mode==='task')observed=await this.backend.inspect();const app=await this.backend.resolveApp(action.app);if(JSON.stringify(app)!==JSON.stringify(raw.approvedApp))throw new Error('Control installed app changed since approval');}
       if(this.session!==s || this.busy || this.now()>=Date.parse(s.expiresAt) || s.state.count>=s.maxActions) throw new Error('Control session changed during focus check');
       if(this.now()-(this.state.lastActionAt??-Infinity)<1000) throw new Error('Input rate limit: one action per second');
+      this.tasks.before(raw,action,observed);
+      Object.assign(mapped,this.tasks.flags(raw));
       mapped.expectedFocus = raw.expectedFocus;
       this.busy = true; s.state.last = this.now(); this.state.lastActionAt = this.now(); s.state.count++; this.save();
       dispatched=true;const receipt=action.action==='launch_app'?await this.backend.launchApp(raw.approvedApp):await this.backend.act(mapped);
@@ -95,12 +101,13 @@ export class InputControl extends EventEmitter {
       this.log(`input failure ${JSON.stringify({ stage:'action', delivery, reason: /^(?:Blocked|Unsupported|Invalid|Typed|Coordinates|Screenshot|Take|Input rate|Control)/.test(error.message) ? error.message : 'portal action failed' })}`);
       await this.backend.releaseAll().catch(()=>{});
       const keepGrant=raw?.action==='launch_app'&&error.launchFailure===true&&this.session&&this.now()<Date.parse(this.session.expiresAt)&&this.session.state.count<this.session.maxActions&&!this.faulted;
-      if(!keepGrant)await this.stop('action failure',true);
+      if(this.session?.state.mode==='task')await this.tasks.end('task refused or failed');
+      else if(!keepGrant)await this.stop('action failure',true);
       throw Object.assign(new Error((/^(Control|Blocked application)/.test(error.message)?error.message:'Input action refused or failed; control ended. See node diagnostics.')+(['type','key'].includes(raw?.action)?' '+deliveryText(delivery):'')),{delivery,launchFailure:keepGrant});
     } finally { this.busy = false; await this.backend.releaseAll().catch(()=>{}); }
   }
   async stop(reason = 'owner off', revoke = false) {
-    const s = this.session; this.session = null; clearTimeout(this.timer); this.frame = null;
+    const s = this.session; this.session = null;if(s?.state.mode==='task')this.backend.cancel?.();await this.tasks.end(reason); clearTimeout(this.timer); this.frame = null;
     if (s && revoke) { s.state.revoked = true; try { this.save(); } catch { this.log('input failure stage=persist_revocation; capability disabled'); } }
     if (s) { this.log(`input ended ${JSON.stringify({grantId:s.grantId,reason,count:s.state.count})}`); this.emit('closed',{grantId:s.grantId,reason,count:s.state.count,delivery:['action failure','action cap'].includes(reason)&&validDelivery(s.state.lastDelivery)?s.state.lastDelivery:undefined}); }
     await this.backend.releaseAll().catch(()=>{}); await this.backend.stop().catch(()=>{});

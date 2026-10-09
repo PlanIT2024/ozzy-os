@@ -51,11 +51,13 @@ export function createPermissions({ root = ROOT, approve = async () => false, no
     let result;
     try {
       if (signal?.aborted) throw new Error('Request cancelled');
-      if (['mcp__computer__computer','mcp__computer__launch_app'].includes(name)) {
+      if (['mcp__computer__computer','mcp__computer__launch_app','mcp__computer__propose_task','mcp__computer__raise_app','mcp__computer__finish_task','mcp__computer__list_apps'].includes(name)) {
         if (!control) throw new Error('Computer control unavailable; tainted and scheduled runs are forbidden.');
-        await control.authorize(name==='mcp__computer__launch_app'?{...input,action:'launch_app',target:`Launch ${input.app}`}:input, { signal });
+        const action=name.replace('mcp__computer__','');
+        await control.authorize(action==='computer'?input:{...input,action,target:action==='launch_app'?`Launch ${input.app}`:`${action} ${input.app||''}`}, { signal });
         result = { behavior: 'allow', updatedInput: input };
       } else if (name === 'mcp__screens__screenshot') {
+        if(control?.taskMode&&control.active())throw new Error('Use computer screenshot within the approved task scope');
         if (!screen) throw new Error('Screenshot access unavailable; scheduled jobs cannot capture screens.');
         await screen.authorize(input.machine, { signal });
         result = { behavior: 'allow', updatedInput: input };
@@ -157,7 +159,7 @@ export function createPermissions({ root = ROOT, approve = async () => false, no
         }
         return {};
       }] }],
-      PostToolUseFailure: [{ hooks: [async event => { approved.delete(event.tool_use_id); audit({ tool: event.tool_name, ...(['mcp__screens__screenshot','mcp__computer__computer','mcp__computer__launch_app'].includes(event.tool_name) ? {} : { query: event.tool_input?.query, url: event.tool_input?.url }), tainted: web?.session(sessionKey).tainted || false, decision: 'failed' }); return {}; }] }],
+      PostToolUseFailure: [{ hooks: [async event => { approved.delete(event.tool_use_id); audit({ tool: event.tool_name, ...((event.tool_name?.startsWith('mcp__computer__')||event.tool_name==='mcp__screens__screenshot') ? {} : { query: event.tool_input?.query, url: event.tool_input?.url }), tainted: web?.session(sessionKey).tainted || false, decision: 'failed' }); return {}; }] }],
     },
   };
 }

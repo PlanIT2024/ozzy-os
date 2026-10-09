@@ -21,6 +21,8 @@ def description(info):
     values = (info.get_id(), info.get_name(), info.get_executable(), info.get_startup_wm_class(), info.get_commandline())
     if blocked(values): raise RuntimeError('blocked_application')
     return {'id': info.get_id(), 'name': info.get_name(),
+            'terminal': info.get_boolean('Terminal') or 'TerminalEmulator' in (info.get_categories() or ''),
+            'browser': 'WebBrowser' in (info.get_categories() or ''),
             'focusNames': sorted({str(value).lower() for value in
                 (info.get_name(), info.get_id().removesuffix('.desktop'),
                  info.get_startup_wm_class(), Path(info.get_executable() or '').name) if value}),
@@ -101,7 +103,7 @@ def failure(error):
 if __name__ == '__main__':
     try:
         value = json.loads(sys.argv[2])
-        result = resolve(value)[1] if sys.argv[1] == 'resolve' else launch(value) if sys.argv[1] == 'launch' else None
+        result = [description(info) for info in Gio.AppInfo.get_all() if isinstance(info,GioUnix.DesktopAppInfo) and not blocked((info.get_id(),info.get_name(),info.get_executable(),info.get_commandline()))] if sys.argv[1] == 'list' else resolve(value)[1] if sys.argv[1] == 'resolve' else launch(value) if sys.argv[1] == 'launch' else None
         if result is None: raise RuntimeError('unsupported_operation')
         print(json.dumps({'ok': True, 'result': result}))
     except Exception as error:

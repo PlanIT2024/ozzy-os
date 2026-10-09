@@ -2,6 +2,7 @@
 """Resident RemoteDesktop portal client: private JSON IPC, metadata-only stderr."""
 import json
 import os
+import re
 import signal
 import sys
 import time
@@ -170,8 +171,10 @@ class Input:
 
     def check_focus(self, action, point=None):
         observed = search_snapshot() if action.get('action')=='focus_search' else snapshot(point)
+        if action.get('task_mode') and (observed.get('hazards') or observed.get('targetHazards')):raise RuntimeError('task_escalation')
         focused = observed['focused']
         if not focused: raise RuntimeError('control_accessibility_unavailable')
+        if action.get('task_mode') and re.search(r'terminal|console|kgx|ptyxis|konsole|kitty|alacritty|xterm|wezterm|tilix|terminator',focused['app'],re.I) and not (action.get('action')=='key' and action.get('keys')=='super'):raise RuntimeError('task_escalation')
         actual='gnome-shell-search' if focused.get('focusKind')=='shell-search' and observed.get('overviewActive') is True else focused['app'].lower()
         if action.get('expected_app','').lower()!=actual:raise RuntimeError('expected_app_mismatch')
         if action.get('action')=='focus_search' and (actual!='gnome-shell' or observed.get('overviewActive') is not True or focused.get('focusKind')!='shell-search-target'):raise RuntimeError('shell_search_not_focused')
@@ -315,7 +318,7 @@ def main():
             except Exception as error:
                 controller.release()
                 screen.diagnostic('failure',**screen.error_details(error))
-                emit({'id':message.get('id'),'ok':False,'errorCode':{'control_focus_changed':'focus_changed','control_overlapping_windows':'overlapping_windows','control_accessibility_unavailable':'accessibility_unavailable','control_target_focus_mismatch':'target_focus_mismatch','blocked_application':'blocked_application','expected_app_mismatch':'expected_app_mismatch','shell_search_not_focused':'shell_search_not_focused'}.get(str(error),'operation_failed'),'delivery':controller.delivery if message.get('method')=='action' else None})
+                emit({'id':message.get('id'),'ok':False,'errorCode':{'control_focus_changed':'focus_changed','control_overlapping_windows':'overlapping_windows','control_accessibility_unavailable':'accessibility_unavailable','control_target_focus_mismatch':'target_focus_mismatch','blocked_application':'blocked_application','task_escalation':'task_escalation','expected_app_mismatch':'expected_app_mismatch','shell_search_not_focused':'shell_search_not_focused'}.get(str(error),'operation_failed'),'delivery':controller.delivery if message.get('method')=='action' else None})
                 if str(error)=='control_focus_changed': continue
                 stop();return GLib.SOURCE_REMOVE
         if eof or condition&GLib.IO_ERR:stop();return GLib.SOURCE_REMOVE

@@ -39,8 +39,9 @@ export class WebLedger {
     this.state.covered[month] = (this.state.covered[month] || 0) + Math.max(0, count - previous);
     this.state.sdkSessions[id] = Math.max(previous,count); this.save();
   }
+  taintBrowser(id,taskId){const s=this.session(id);s.tainted=true;s.browserTask=taskId;this.save();}
   result(id,tool,output) {
-    const s=this.session(id); s.tainted=true;
+    const s=this.session(id); s.tainted=true;delete s.browserTask;
     if (tool === 'WebSearch' && Number.isInteger(output?.searchCount) && output.searchCount > 1) { const counts=this.status(); counts.daily.search += output.searchCount - 1; counts.monthly.search += output.searchCount - 1; }
     // Only structured search-hit URLs are provenance, never model commentary.
     if(tool==='WebSearch') for(const group of output?.results || []) if(typeof group==='object') for(const hit of group.content || []) if(typeof hit.url==='string') s.urls.push(hit.url);

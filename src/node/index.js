@@ -46,7 +46,8 @@ export function startNode({ transport = process.env.NODE_TRANSPORT || 'local', u
       if (m.type !== 'req' || typeof m.id !== 'string' || m.id.length > 128) return;
       const sendResult = value => { if (current === peer && current.state === 'open') current.send({ type: 'res', id: m.id, ...value }); };
       if (m.method === 'input_stop') { if (!input.session || m.params?.grantId === input.session.grantId) await input.stop(m.params?.revoke === false ? 'runtime suspended' : 'owner off', m.params?.revoke !== false); return sendResult({ ok: true, result: { stopped: true } }); }
-      if (!['status', 'screen','input_start','input_action','input_focus','input_resolve_app'].includes(m.method)) return sendResult({ ok: false, error: 'Unsupported method' });
+      if(m.method==='input_task_finish'){if(input.tasks?.active?.id===m.params?.taskId&&input.session?.grantId===m.params?.grantId){if(input.tasks.busy)await input.stop('task cancelled',true);else await input.tasks.end('finished');}return sendResult({ok:true,result:{ended:true}});}
+      if (!['status', 'screen','input_start','input_action','input_focus','input_resolve_app','input_list_apps','input_task_prepare','input_task_start','input_task_action','input_task_check'].includes(m.method)) return sendResult({ ok: false, error: 'Unsupported method' });
       if (m.method === 'screen') log('screen capture attempt stage=node_request');
       if (m.method === 'screen' && !await screen.available({ diagnose: true })) { log('screen capture failure stage=availability'); return sendResult({ ok: false, error: 'Screen capture disabled or graphical session unavailable' }); }
       if (busy) { if (m.method === 'screen') log('screen capture failure stage=busy'); return sendResult({ ok: false, error: 'Status collection busy' }); }
@@ -55,6 +56,11 @@ export function startNode({ transport = process.env.NODE_TRANSPORT || 'local', u
         let result;
         if (m.method === 'screen') { result = await screen.capture(); input.observe(result); }
         else if (m.method === 'input_start') result = await input.start(m.params || {});
+        else if(m.method==='input_list_apps'){if(input.session?.grantId!==m.params?.grantId||!await input.available())throw new Error('Control app discovery unavailable');result=await input.backend.listApps();}
+        else if(m.method==='input_task_check')result=await input.tasks.inspect(m.params||{});
+        else if(m.method==='input_task_prepare')result=await input.tasks.prepare(m.params||{});
+        else if(m.method==='input_task_start')result=await input.tasks.start(m.params||{});
+        else if(m.method==='input_task_action')result=await input.tasks.action(m.params||{});
         else if (m.method === 'input_resolve_app') result = await input.resolveApp(m.params || {});
         else if (m.method === 'input_focus') result = await input.inspect(m.params || {});
         else if (m.method === 'input_action') result = await input.act(m.params || {});
@@ -83,6 +89,7 @@ export function startNode({ transport = process.env.NODE_TRANSPORT || 'local', u
     });
   }
   function capabilities() { return ['status', ...(screenAvailable ? ['screen'] : []), ...(screenAvailable && inputAvailable ? ['input'] : [])]; }
+  for(const event of ['task_progress','task_ended'])input.on(event,details=>{if(peer?.state==='open')try{peer.send({type:'control_'+event,...details});}catch{log('task metadata delivery unavailable');}});
   input.on('closed', details => { if (peer?.state === 'open') { try { peer.send({ type: 'control_closed', ...details }); } catch { log('input closure delivery unavailable'); } } });
   async function refreshScreen() {
     if (stopped || checkingScreen) return; checkingScreen = true;

@@ -95,6 +95,15 @@ export class NodeHub extends EventEmitter {
     } else if (m.type === 'control_closed') {
       if (typeof m.grantId !== 'string' || m.grantId.length > 80 || typeof m.reason !== 'string' || m.reason.length > 100) throw new Error('Invalid control closure');
       this.emit('control_closed', { machine: n.machine, grantId: m.grantId, reason: m.reason,delivery:validDelivery(m.delivery)?m.delivery:undefined });
+    } else if (['control_task_progress','control_task_ended'].includes(m.type)) {
+      if(![m.taskId,m.grantId].every(id=>typeof id==='string'&&/^[a-zA-Z0-9-]{1,80}$/.test(id))||!Number.isInteger(m.steps)||m.steps<0||m.steps>40)throw new Error('Invalid task metadata');
+      const event={machine:n.machine,taskId:m.taskId,grantId:m.grantId,steps:m.steps};
+      for(const key of ['action','app','phase','reason'])if(typeof m[key]==='string')event[key]=m[key].slice(0,160);
+      if(m.willCapture===true)event.willCapture=true;
+      if(Number.isInteger(m.textLength)&&m.textLength>=0&&m.textLength<=500)event.textLength=m.textLength;
+      if(validDelivery(m.delivery))event.delivery=m.delivery;
+      if(m.capture&&typeof m.capture.capturedAt==='string')event.capture={capturedAt:m.capture.capturedAt,original:{width:m.capture.original?.width,height:m.capture.original?.height},scaled:{width:m.capture.scaled?.width,height:m.capture.scaled?.height}};
+      this.emit(m.type,event);
     } else if (m.type === 'res') {
       const p = this.pending.get(m.id);
       if (p && p.peer === peer) { this.pending.delete(m.id); clearTimeout(p.timer); if (m.ok === true) p.resolve(m.result); else p.reject(Object.assign(new Error(String(m.error || 'Node request failed')),{delivery:validDelivery(m.delivery)?m.delivery:undefined,launchFailure:m.launchFailure===true})); }
@@ -111,11 +120,11 @@ export class NodeHub extends EventEmitter {
   request(machine, method, params = {}) {
     let n; try { n = this.nodes.get(canonical(machine)); } catch { return Promise.reject(new Error('Invalid machine name')); }
     if (!n?.online || !n.peer || Date.now() - n.lastSeen > this.stale) return Promise.reject(new Error(`Machine ${machine} is offline`));
-    if (!['status','screen','input_start','input_action','input_focus','input_resolve_app','input_stop'].includes(method)) return Promise.reject(new Error('Unsupported method'));
-    if (['input_start','input_action','input_focus','input_resolve_app'].includes(method) && !n.capabilities?.includes('input')) return Promise.reject(new Error('Machine has no input capability'));
+    if (!['status','screen','input_start','input_action','input_focus','input_resolve_app','input_stop','input_list_apps','input_task_prepare','input_task_start','input_task_action','input_task_check','input_task_finish'].includes(method)) return Promise.reject(new Error('Unsupported method'));
+    if (['input_start','input_action','input_focus','input_resolve_app','input_list_apps','input_task_prepare','input_task_start','input_task_action','input_task_check'].includes(method) && !n.capabilities?.includes('input')) return Promise.reject(new Error('Machine has no input capability'));
     if (method === 'screen' && !n.capabilities?.includes('screen')) return Promise.reject(new Error('Machine has no screen capability'));
     return new Promise((resolve, reject) => {
-      const id = randomUUID(); const timer = setTimeout(() => { this.pending.delete(id); reject(new Error('Node request timed out')); }, ['screen','input_start'].includes(method) ? Math.max(this.timeout, 120000) : this.timeout);
+      const id = randomUUID(); const timer = setTimeout(() => { this.pending.delete(id); reject(new Error('Node request timed out')); }, ['screen','input_start','input_task_action'].includes(method) ? Math.max(this.timeout, 120000) : this.timeout);
       this.pending.set(id, { peer: n.peer, resolve, reject, timer });
       try { n.peer.send({ type: 'req', id, method, params }); } catch (error) { clearTimeout(timer); this.pending.delete(id); reject(error); }
     });

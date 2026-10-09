@@ -32,8 +32,8 @@ export function commands() {
       .addSubcommand(s => s.setName('on').setDescription('Grant 15 minutes of read-only capture').addStringOption(o => o.setName('machine').setDescription('Machine name (optional if just one has screen)')))
       .addSubcommand(s => s.setName('off').setDescription('Revoke this conversation’s screen grant'))
       .addSubcommand(s => s.setName('status').setDescription('Show this conversation’s screen grant')),
-    new SlashCommandBuilder().setName('control').setDescription('Owner step-approved computer input (shell-level access)')
-      .addSubcommand(s => s.setName('on').setDescription('Grant up to 10 minutes; every step needs approval').addStringOption(o => o.setName('machine').setDescription('Machine name')).addBooleanOption(o => o.setName('with-screen').setDescription('Also start the required screen grant')))
+    new SlashCommandBuilder().setName('control').setDescription('Owner task or step-approved computer input (shell-level access)')
+      .addSubcommand(s => s.setName('on').setDescription('Grant up to 10 minutes; task mode by default').addStringOption(o=>o.setName('mode').setDescription('task (default) or step').addChoices({name:'task',value:'task'},{name:'step',value:'step'})).addStringOption(o => o.setName('machine').setDescription('Machine name')).addBooleanOption(o => o.setName('with-screen').setDescription('Also start the required screen grant')))
       .addSubcommand(s => s.setName('off').setDescription('Stop input and revoke this grant'))
       .addSubcommand(s => s.setName('status').setDescription('Show input grant and step count'))
       .addSubcommand(s => s.setName('preview').setDescription('Attach a small target crop to step cards').addStringOption(o => o.setName('state').setDescription('on or off').setRequired(true).addChoices({name:'on',value:'on'},{name:'off',value:'off'}))),
@@ -56,7 +56,8 @@ export class ApprovalRelay {
     // Show the complete proposed operation; large edits are reviewable as an attachment.
     const review = diff || JSON.stringify({ tool, ...(file ? { file } : {}), ...(action ? { action, description } : {}), ...input }, null, 2);
     const target = url || file || [action, description].filter(Boolean).join(' · ') || tool;
-    const label = target?.length > 1700 ? 'Full URL in proposed-operation.json (including query string)' : target;
+    const longWarnings=[...(description?.includes('page content could steer bIT')?['⚠️ page content could steer bIT — browser task taints this thread']:[]),...(/FREE TEXT IN/.test(description||'')?['⚠️ FREE TEXT enabled: see the exact apps in the attached plan; never terminals']:[])].join('\n');
+    const label = target?.length > 1700 ? (url?'Full URL in proposed-operation.json (including query string)':`${action||tool}: full operation in proposed-operation.json${longWarnings?'\n'+longWarnings:''}`) : target;
     const diffPreview = diff && diff.length <= 1400 && !diff.includes('```') ? `\n\`\`\`diff\n${diff}\n\`\`\`` : '';
     const message = await channel.send({ flags: MessageFlags.SuppressEmbeds, content: `This needs your say-so, Ozzy: ${action ? label : `${tool} ${label}`}\nExpires in 10 minutes.${diffPreview}`, files: [{ attachment: Buffer.from(review), name: diff ? 'proposed-change.diff' : 'proposed-operation.json' }, ...(preview ? [{ attachment: preview, name: 'target-preview.png' }] : [])], components: [row], allowedMentions: { parse: [] } });
     return new Promise(resolve => {
@@ -85,6 +86,25 @@ export class ApprovalRelay {
   }
   close() { for (const p of this.pending.values()) void p.finish(false, 'brain shutting down'); }
 }
+export class TaskProgressRelay {
+  constructor(owner){this.owner=owner;this.pending=new Map();}
+  async start(channel,task,stop){
+    const id=task.id,row=new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`task-stop:${id}`).setLabel('⏹ Stop').setStyle(ButtonStyle.Danger));
+    const message=await channel.send({content:`🖱️ Task: ${task.goal}\n${task.machine} · approved, 0 steps · until ${task.expiresAt}`,flags:MessageFlags.SuppressEmbeds,components:[row],allowedMentions:{parse:[]}});
+    let done=false,chain=Promise.resolve();
+    const edit=packet=>{chain=chain.catch(()=>{}).then(()=>message.edit({...packet,allowedMentions:{parse:[]}}));return chain;};
+    const ui={update:async value=>{if(!done)await edit({content:`🖱️ Task: ${task.goal}\n${value.steps}/${value.max} · ${value.action} · ${value.app||task.machine} · ${value.result}${value.capture?' · 📸 verified':''}`,components:[row]});},finish:async summary=>{if(done)return;done=true;this.pending.delete(id);await edit({content:`Task: ${task.goal}\n${summary}`,components:[]}).catch(()=>{});}};
+    this.pending.set(id,{channel:channel.id,message:message.id,stop});return ui;
+  }
+  async handle(interaction){
+    if(interaction.user.id!==this.owner)return;
+    const match=/^task-stop:([^:]+)$/.exec(interaction.customId||'');if(!match)return;
+    const p=this.pending.get(match[1]);if(!p||p.channel!==interaction.channelId||p.message!==interaction.message.id)return;
+    this.pending.delete(match[1]);const stopped=p.stop();await interaction.deferUpdate();await stopped;
+  }
+  close(){for(const p of this.pending.values())void p.stop();this.pending.clear();}
+}
+
 export function machineLine(machine, status) {
   const number = (n, suffix = '') => Number.isFinite(n) ? `${Math.round(n)}${suffix}` : '?';
   const seconds = Number(status.uptime);
@@ -98,13 +118,13 @@ export async function machinesText(hub, onError = () => {}) {
   const machines = hub.list(); if (!machines.length) return 'No machines registered yet. My ring is listening.';
   return (await Promise.all(machines.map(async machine => {
     if (!machine.online) return `${machine.machine} ⚫ offline · last seen ${machine.lastSeen ? new Date(machine.lastSeen).toISOString() : 'never'}`;
-    try { return machineLine(machine.machine, await hub.request(machine.machine, 'status')) + (machine.capabilities?.includes('screen') ? ' · screen available' : '') + (machine.capabilities?.includes('input') ? ' · input available (step-approved)' : ''); }
+    try { return machineLine(machine.machine, await hub.request(machine.machine, 'status')) + (machine.capabilities?.includes('screen') ? ' · screen available' : '') + (machine.capabilities?.includes('input') ? ' · input available (task/step-approved)' : ''); }
     catch (e) { onError(e, { machine: machine.machine }); return `${machine.machine} 🟡 my status sensor hit a snag. Try again in a moment, Ozzy.`; }
   }))).join('\n');
 }
 export function createDiscord({ runner, hub, budget, scheduler, reminders, env = process.env, auditFile = path.join(ROOT, 'data/audit.log'), client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.DirectMessages], partials: [Partials.Channel] }) }) {
   const owner = env.OWNER_DISCORD_ID, bitChannel = env.BIT_CHANNEL_ID;
-  const approvals = new ApprovalRelay(owner);
+  const approvals = new ApprovalRelay(owner),taskProgress=new TaskProgressRelay(owner);
   if (runner.controls) runner.controls.notifyThread = async (thread, text) => sendText(await client.channels.fetch(thread), text);
   const fail = (error, context = {}) => {
     console.error('Discord operation failed:', context, error);
@@ -154,7 +174,7 @@ export function createDiscord({ runner, hub, budget, scheduler, reminders, env =
       const fresh = channel.id === bitChannel && !channel.isThread();
       if (fresh) channel = await message.startThread({ name: `bIT · ${message.content.slice(0, 70).replace(/\s+/g, ' ')}`, autoArchiveDuration: 1440 });
       await channel.sendTyping();
-      const response = await runner.run(channel.id, message.content, { fresh, notify: text => sendText(channel, text), approve: request => approvals.request(channel, request), publish: ({ buffer, mimeType }) => channel.send({ files: [{ attachment: buffer, name: mimeType === 'image/png' ? 'screenshot.png' : 'screenshot.jpg' }], allowedMentions: { parse: [] } }) });
+      const response = await runner.run(channel.id, message.content, { fresh, notify: text => sendText(channel, text), startProgress: (task,stop)=>taskProgress.start(channel,task,stop), approve: request => approvals.request(channel, request), publish: ({ buffer, mimeType }) => channel.send({ files: [{ attachment: buffer, name: mimeType === 'image/png' ? 'screenshot.png' : 'screenshot.jpg' }], allowedMentions: { parse: [] } }) });
       await sendText(channel, response);
     } catch (e) { fail(e); await sendText(channel, 'My ring hit a snag. Check the brain console, Ozzy.').catch(fail); }
   });
@@ -168,7 +188,7 @@ export function createDiscord({ runner, hub, budget, scheduler, reminders, env =
         // Acknowledge before channel resolution, validation, or any command work.
         await interaction.deferReply();
       } else {
-        if (interaction.isButton() && allowedLocation(interaction.channel, bitChannel)) await approvals.handle(interaction);
+        if (interaction.isButton() && allowedLocation(interaction.channel, bitChannel)){if(interaction.customId?.startsWith('task-stop:'))await taskProgress.handle(interaction);else await approvals.handle(interaction);}
         return;
       }
       const channel = interaction.channel || await client.channels.fetch(interaction.channelId);
@@ -220,8 +240,8 @@ export function createDiscord({ runner, hub, budget, scheduler, reminders, env =
             else {
               try {
                 runner.controls.subscribe(channel.id, text => sendText(channel,text));
-                await runner.controls.on(channel.id,machine.machine,{ withScreen: interaction.options.getBoolean('with-screen') === true, tainted: Boolean(runner.web?.session(runner.webKeys?.[channel.id] || runner.sessions?.[channel.id] || channel.id).tainted) });
-                response = `🖱️ controlling ${machine.machine}. ${runner.controls.describe(channel.id)} Input is equivalent to shell access; every action waits for your button.`;
+                await runner.controls.on(channel.id,machine.machine,{ withScreen: interaction.options.getBoolean('with-screen') === true, mode: interaction.options.getString('mode')||'task', tainted: Boolean(runner.web?.session(runner.webKeys?.[channel.id] || runner.sessions?.[channel.id] || channel.id).tainted) });
+                response = `🖱️ controlling ${machine.machine}. ${runner.controls.describe(channel.id)} Input is equivalent to shell access; task mode needs one complete approved plan. Step mode waits for a button on every input action.`;
               } catch(error) { response = error.message; }
             }
           }
@@ -259,7 +279,7 @@ export function createDiscord({ runner, hub, budget, scheduler, reminders, env =
       } catch (replyError) { fail(replyError, { ...context, stage: 'error_reply' }); }
     }
   });
-  return { client, approvals, failure,
+  return { client, approvals, taskProgress, failure,
     async runScheduled(job, { due, misses, timezone, webAllowed }) {
       const base = await client.channels.fetch(bitChannel);
       const balance = budget.status();
@@ -309,7 +329,7 @@ export function createDiscord({ runner, hub, budget, scheduler, reminders, env =
     try { await Promise.race([reconnect(), failure]);
       if (typeof client.isReady === 'function' && !client.isReady()) await Promise.race([new Promise(resolve => client.once(Events.ClientReady, resolve)), failure]); }
     catch (error) { fatal(error, 'login'); throw error; }
-  }, close() { closed = true; approvals.close(); client.destroy(); } };
+  }, close() { closed = true; approvals.close(); taskProgress.close();client.destroy(); } };
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href && process.argv.includes('--register')) {
   required(process.env, ['DISCORD_TOKEN', 'DISCORD_APP_ID', 'DISCORD_GUILD_ID']);

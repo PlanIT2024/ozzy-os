@@ -51,5 +51,5 @@ export function mapPoint(point, frame) {
   return { x: logicalX, y: logicalY, monitor: { x: monitor.x, y: monitor.y, width: monitor.width, height: monitor.height, connector: monitor.connector } };
 }
 export function actionLog(input, logText = false) {
-  return { action: input.action, expected_app:input.expected_app, app:input.action==='launch_app'?input.app:undefined, coordinate: input.coordinate, end: input.end, keys: input.keys, direction: input.direction, amount: input.amount, ...(input.action === 'type' ? { textLength: [...input.text].length, ...(logText ? { text: input.text } : {}) } : {}) };
+  return { action: input.action, expected_app:input.expected_app, app:input.action==='launch_app'?input.app:undefined, coordinate: input.coordinate, end: input.end, keys: input.keys, direction: input.direction, amount: input.amount, ...(input.action === 'type' ? { textLength: typeof input.text==='string'?[...input.text].length:input.textLength, ...(logText&&typeof input.text==='string' ? { text: input.text } : {}) } : {}) };
 }

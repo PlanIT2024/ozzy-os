@@ -37,7 +37,7 @@ export class LinuxInput extends EventEmitter {
           else if (message.event==='closed') { this.log('input portal session closed'); this.emit('closed', { source:'portal', reason:'GNOME Stop' }); }
           else { const p=this.pending.get(message.id);if(p){clearTimeout(p.timer);this.pending.delete(message.id);
             if(message.ok)p.resolve(message.result);
-            else {const messages={expected_app_mismatch:'Control expected-app mismatch; no further input sent. Stop and explain.',shell_search_not_focused:'Control focus mismatch: GNOME overview search is not active and focused.',focus_changed:'Control focus changed since approval; stop and explain.',blocked_application:'Blocked application; stop and explain.'};
+            else {const messages={task_escalation:'Control task escalation required: sensitive screen, terminal, sending target or unexpected dialog. Stop and ask.',expected_app_mismatch:'Control expected-app mismatch; no further input sent. Stop and explain.',shell_search_not_focused:'Control focus mismatch: GNOME overview search is not active and focused.',focus_changed:'Control focus changed since approval; stop and explain.',blocked_application:'Blocked application; stop and explain.'};
               const reason=messages[message.errorCode]||(['overlapping_windows','accessibility_unavailable','target_focus_mismatch'].includes(message.errorCode)?focusRefusal({'overlapping_windows':'overlapping-windows','target_focus_mismatch':'focus-mismatch'}[message.errorCode]):'RemoteDesktop operation failed');
               p.reject(Object.assign(new Error(reason),{delivery:validDelivery(message.delivery)?message.delivery:p.delivery}));
             }
@@ -89,6 +89,8 @@ export class LinuxInput extends EventEmitter {
     this.log(`input launch ${JSON.stringify({stage:operation,app:packet.result?.launched?.id??packet.result?.id,startup:packet.result?.startup,exitCode})}`);
     return packet.result;
   }
+  listApps(){return this.appOperation('list',null);}
+  cancel(){this.child?.kill('SIGTERM');}
   resolveApp(app){return this.appOperation('resolve',app);}
   launchApp(approved){return this.appOperation('launch',approved);}
   act(action){return this.request('action',action);}

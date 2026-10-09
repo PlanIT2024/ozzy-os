@@ -1,3 +1,4 @@
+import { ControlTasks } from './controlTasks.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -11,7 +12,7 @@ import sharp from '../node/screen/sharp.js';
 export class ControlGrants {
   constructor({root=ROOT,hub,screens,now=()=>Date.now(),cap=Number(process.env.BIT_CONTROL_MAX_ACTIONS??40)}={}){
     if(!Number.isInteger(cap)||cap<1||cap>1000)throw new Error('Invalid control cap');
-    Object.assign(this,{root,hub,screens,now,cap});this.file=path.join(root,'data/controls.json');this.state=readJSON(this.file,{grants:{},previews:{}});this.listeners=new Map();this.timers=new Map();this.warningTimers=new Map();
+    Object.assign(this,{root,hub,screens,now,cap});this.file=path.join(root,'data/controls.json');this.state=readJSON(this.file,{grants:{},previews:{}});this.listeners=new Map();this.timers=new Map();this.warningTimers=new Map();this.tasks=new ControlTasks(this);
     hub?.on?.('control_closed',({machine,grantId,reason,delivery})=>{
       for(const [thread,g]of Object.entries(this.state.grants))if(!g.revokedAt&&canonical(machine)===g.machine&&(!grantId||grantId===g.id)){
         if(['runtime suspended','disconnect'].includes(reason)){g.runtimeClosedAt=new Date(this.now()).toISOString();try{this.save();this.audit(g,null,'suspended');}catch{console.warn('Control suspension persistence unavailable');}}
@@ -34,33 +35,38 @@ export class ControlGrants {
   isTainted(thread,web,sessionKey){return Boolean(web.session(sessionKey||thread).tainted);}
   grant(thread){const g=this.state.grants[thread];if(!g||g.revokedAt)throw new Error('No active control grant here, Ozzy. Use /control on in this thread.');if(this.now()>=Date.parse(g.expiresAt)||!Number.isFinite(Date.parse(g.expiresAt)))throw new Error('Control grant expired, Ozzy.');if(g.count>=g.maxActions)throw new Error('Control action cap reached, Ozzy.');return g;}
   active(thread){try{return this.grant(thread);}catch{return null;}}
-  describe(thread){try{const g=this.grant(thread);return `Control: ${g.machine} until ${g.expiresAt} · ${g.count}/${g.maxActions} steps · input steps need ✅; screenshots automatic · preview ${this.state.previews[thread]?'on':'off'}.`;}catch(error){return error.message;}}
+  describe(thread){try{const g=this.grant(thread);return `Control: ${g.machine} until ${g.expiresAt} · ${g.count}/${g.maxActions} steps · ${g.mode==='task'?'task plan needs ✅; scoped steps autonomous':'input steps need ✅'}; screenshots automatic · preview ${this.state.previews[thread]?'on':'off'}.`;}catch(error){return error.message;}}
   preview(thread,value){this.state.previews[thread]=Boolean(value);this.save();}
-  async on(thread,machine,{withScreen=false,tainted=false}={}){
+  async on(thread,machine,{withScreen=false,tainted=false,mode='step'}={}){
+    if(!['step','task'].includes(mode))throw new Error('Choose task or step control mode');
     if(tainted)throw new Error('Web-tainted threads cannot control a computer, Ozzy. Start a fresh thread.');
     machine=canonical(machine);const n=this.hub.list().find(n=>canonical(n.machine)===machine&&n.online&&n.capabilities?.includes('input')&&n.capabilities?.includes('screen'));
     if(!n)throw new Error('That machine has no input capability, Ozzy.');
     let screen=this.screens.active(thread);
     if(!screen||screen.machine!==machine){if(!withScreen)throw new Error('Use /screen on for this machine first, or /control on with-screen:true.');this.screens.on(thread,machine);screen=this.screens.grant(thread);}
     for(const [other,g]of Object.entries(this.state.grants))if(!g.revokedAt&&(g.machine===machine||other===thread))await this.off(other,'replaced');
-    const g={id:randomUUID(),machine,issuedAt:new Date(this.now()).toISOString(),expiresAt:new Date(Math.min(this.now()+600000,Date.parse(screen.expiresAt))).toISOString(),count:0,maxActions:this.cap,actions:[],screenId:screen.id};
+    const g={id:randomUUID(),machine,mode,issuedAt:new Date(this.now()).toISOString(),expiresAt:new Date(Math.min(this.now()+600000,Date.parse(screen.expiresAt))).toISOString(),count:0,maxActions:this.cap,actions:[],screenId:screen.id};
     this.state.grants[thread]=g;this.save();this.arm(thread,g);this.audit(g,null,'on');
-    try{await this.hub.request(machine,'input_start',{grantId:g.id,expiresAt:g.expiresAt,maxActions:g.maxActions});if(this.grant(thread).id!==g.id)throw new Error('Control grant changed during consent');}
+    try{await this.hub.request(machine,'input_start',{grantId:g.id,expiresAt:g.expiresAt,maxActions:g.maxActions,mode:g.mode});if(this.grant(thread).id!==g.id)throw new Error('Control grant changed during consent');}
     catch{await this.off(thread,'portal consent failed');throw new Error('Control consent failed or session ended, Ozzy. Check the machine’s GNOME dialog and node logs.');}
     return g;
   }
   async off(thread,reason='owner off',send=true,expectedId){
     const g=this.state.grants[thread];if(!g||g.revokedAt||(expectedId&&g.id!==expectedId))return;
     g.revokedAt=new Date(this.now()).toISOString();g.reason=reason;clearTimeout(this.timers.get(thread));clearTimeout(this.warningTimers.get(thread));try{this.save();this.audit(g,null,'off');}catch{console.warn('Control revocation persistence failed; stopping node anyway');}
+    await this.tasks.finishFor(thread,reason);
     if(send)await this.hub.request(g.machine,'input_stop',{grantId:g.id}).catch(()=>{});
     const notify=this.listeners.get(thread)|| (this.notifyThread ? text=>this.notifyThread(thread,text) : ()=>{});
     await Promise.resolve(notify(`🖱️ control ended on ${g.machine}: ${g.count} steps (completed: ${g.actions.join(', ')||'none'}${g.pendingAction ? '; unverified: '+g.pendingAction : ''}${g.lastDelivery ? '; '+deliveryText(g.lastDelivery) : ''}). ${reason}.`)).catch(()=>console.warn('Control end notification unavailable'));
   }
   async close(){
+    for(const thread of this.tasks.live.keys())await this.tasks.finishFor(thread,'brain restart');
     for(const g of Object.values(this.state.grants))if(!g.revokedAt){await this.hub.request(g.machine,'input_stop',{grantId:g.id,revoke:false}).catch(()=>{});try{this.audit(g,null,'suspended');}catch{console.warn('Control suspension audit unavailable');}}
     for(const timer of [...this.timers.values(),...this.warningTimers.values()])clearTimeout(timer);
   }
-  context({thread,scheduled=false,tainted=()=>false,approve=async()=>false,notify=async()=>{},screen}){
+  context(options){
+    const {thread,scheduled=false,tainted=()=>false,approve=async()=>false,notify=async()=>{},screen}=options;
+    if(this.active(thread)?.mode==='task')return this.tasks.context(options);
     let stopped=false,frame=null,reservation=null;const generation=this.active(thread)?.id;const receipts=new Map();
     const gate=machine=>{
       if(stopped)throw new Error('This control task ended. Ask Ozzy what to do instead.');

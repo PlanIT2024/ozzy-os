@@ -503,3 +503,51 @@ application text insertion. An unacknowledged in-flight call, helper crash or
 connection loss is explicitly **uncertain** with the confirmed lower bound; it
 never falsely reports none. Receipts pass through authenticated node responses,
 failure summaries and audit metadata. No typed text is added to receipts or state.
+
+## Task-approved control (Phase 7)
+
+`/control on` now selects task mode. An active screen grant is still required;
+`/control on with-screen:true` explicitly starts both grants. Use
+`/control on mode:step` to retain Phase 6's individual action cards. Both modes
+retain the node's Discord block, expected-app binding, focus checks, caps and
+GNOME Stop handling. Keep `CONTROL_ENABLED=false` when control is not wanted.
+
+In task mode, bIT first calls `list_apps` to resolve installed desktop IDs and
+`propose_task` with a goal, allowed desktop IDs, exact typed strings, action types,
+limits, optional additional key combinations, and optional `free_text_apps`.
+The one owner-only ✅ card shows the complete plan. Chat cannot approve it.
+Defaults are 25 steps and 10 minutes; the hard step maximum is 40 and the existing
+control grant can expire sooner. Free text requires a separate conspicuous flag
+for each allowed app. Terminals cannot enter autonomous plans. Browser inclusion
+shows “⚠️ page content could steer bIT” and permanently taints that thread.
+Only the already-approved browser task can continue after its own browser taint;
+subsequent web-tool results end control, and no new task can start while tainted.
+
+The node holds the approved scope in memory and independently checks every
+app, typed string, action and key. A restart discards the plan. Raw Shell input
+cannot be authorized in a plan. `raise_app` runs a fixed macro for an allowed
+installed app: launch, inspect actual focus, then if needed one Super press,
+verify/focus the overview search, type the installed app's display name and Enter.
+Every internal action checks focus, counts toward limits, and captures a fresh
+screen. It stops if the final focused application does not match the target.
+Outside that macro, `expected_app` must match an allowed application and the
+actual focused app. bIT stops and asks after any refusal or unexpected result.
+
+Navigation/editing keys are permitted within scope; other combinations must be
+listed. Clipboard paste, dangerous/closing keys, sending, Enter in messaging or
+browser apps, terminals, and sensitive or unexpected dialogs require handback
+or a separately enabled step session. Accessible password fields, modal dialogs,
+sensitive labels and sending/closing controls are checked before actions and
+between typed characters. **Accessibility detection is best-effort:** custom-drawn
+or inaccessible UI can hide these semantics. bIT must also inspect the screenshots
+and stop at login, 2FA, credentials, payment screens, unsaved-work dialogs or any
+ambiguity. Approval does not authorize disabling security settings.
+
+Each task has one Discord progress message, edited as actions run, with an
+owner-only ⏹ Stop button. Stop, `/control off`, GNOME Stop, grant/task expiry and
+caps cancel input and release held keys/buttons. A completed or refused task
+clears its scope; ordinary task failure retains the parent grant so a new plan
+can be proposed. Owner Stop revokes that grant. Every capture attempt counts
+toward the daily screen cap, including internal raise steps. Screen images and
+plan texts are not persisted in SDK sessions, transcripts, task state or audit
+logs; the approval card deliberately contains the exact typed strings.
