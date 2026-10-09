@@ -231,3 +231,60 @@ SDK run recorded one card, `accepted:false`, zero steps/actions, and reason
 The owner was asked for readiness before any fresh live proposal. The required
 approved Discord-focused raise-and-type proof remains pending; this fix is not
 reported as live-verified. Final full suite: **161/161 passed**.
+
+## Activation timing / selected search result — 2026-10-09
+
+The 16:34 owner-approved run reached Enter at 16:34:50 EDT. At
+**16:34:53.300 EDT** its control audit recorded the verified key's focus as
+**unknown**. The historical record has no app/window identity for that missing
+focus and no repeated observations. It cannot establish which window eventually
+came forward; the owner's supplied screen-status field remained a placeholder.
+
+The verification path used a focus snapshot taken before capturing the image.
+For launch, the 16:34:29.021 audit said Discord, but the subsequent fresh check
+before Super saw Obsidian. Thus launch had activated Obsidian during capture,
+and the macro unnecessarily entered Overview based on an earlier sample.
+Capture now refreshes focus before returning its result. That prevents a
+needless Super fallback when launch has already focused the target.
+
+After macro Enter, the node polls read-only focus at 200 ms intervals for up to
+3 seconds, requiring **OverviewActive=false AND the approved target app focused**.
+It logs every observation's timestamp, elapsed time, app/window identity,
+overview state and missing-focus reason. These polls are not input actions and
+do not consume steps. The final verification image is captured after focus
+settles. Stop, expiry and grant changes are checked before and after every read.
+A bounded per-read timeout and focus-only scan avoid full hazard traversals in
+the activation wait; actual input still uses full recipient safety checks.
+
+Before Enter, the node examines the showing, selected accessible Overview
+result. The installed GNOME 50 search.js marks its default result selected;
+AppSearchProvider creates AppIcon objects for desktop entries. The result helper
+recognizes the installed AppIcon structure (icon container, BaseIcon and empty
+running-dot widget), distinguishes remote file/list results, and binds the
+visible app name to a unique installed desktop ID. It must match the approved
+app ID and name; otherwise the macro stops and reports only the app/file name.
+Missing or unfamiliar accessibility is refused. The resident helper repeats
+this check immediately before delivering Enter, preventing a changed result
+between node preflight and input. Editable search text and result descriptions
+are not read. GNOME source was inspected directly from the installed
+`/usr/lib/gnome-shell/libshell-18.so` resources, search.js/appDisplay.js.
+
+Regression coverage includes delayed activation, stale launch focus during
+capture, wrong applications, a file named “Obsidian”, and a result changing before
+Enter in the real Python helper path. Full suite: **165 passed, 0 failed, 0 skipped**.
+Services reinstalled with `/usr/bin/node`, preserving existing screen/control flags.
+
+Live proof was prepared through the real SDK/Discord brain code and deployed
+bit-node.service. The single plan card is:
+https://discord.com/channels/1554194124595269672/1558219254497681559/1558219285283733586
+The owner was notified before input, joined to the proof thread, and notified
+there that the card is ready. Outcome will be recorded after owner approval;
+no successful live input is claimed yet.
+
+The live card was not approved before expiry. At **16:57:01 EDT** the node
+ended the diagnostic grant with count 0 and the helper exited successfully.
+The real SDK/Discord run recorded one card, `accepted:false`, zero steps/actions,
+and reason `expired`. No launch, key, pointer action or screenshot ran. The normal
+brain/node services were reinstalled and restored afterwards. **The required
+approved Discord-focused raise-and-type proof remains incomplete**; no fresh
+grant was automatically issued after the timeout.

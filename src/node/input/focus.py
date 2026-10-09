@@ -106,7 +106,7 @@ def shell_entry(window):
     return matches[0] if len(matches) == 1 and not pending else None
 
 
-def snapshot(point=None):
+def snapshot(point=None, hazards=True):
     Atspi.set_timeout(700, 700)
     desktop = Atspi.get_desktop(0)
     overview=overview_active()
@@ -136,12 +136,13 @@ def snapshot(point=None):
                 active = states.contains(Atspi.StateType.ACTIVE)
                 if active:
                     focused.append(record)
+                if active and hazards:
                     try:hazard_records[(record['pid'],record['windowId'])]=screen_hazards(window,record['window'])
                     except Exception:hazard_records[(record['pid'],record['windowId'])]=['accessibility_incomplete']
                 if app_name.lower() == 'gnome-shell' and overview is True:
                     entry = shell_entry(window)
                     if entry is not None:
-                        try:hazard_records[(record['pid'],record['windowId'])]=screen_hazards(window,record['window'])
+                        try:hazard_records[(record['pid'],record['windowId'])]=screen_hazards(window,record['window']) if hazards else []
                         except Exception:hazard_records[(record['pid'],record['windowId'])]=['accessibility_incomplete']
                         shell_focused.append({**record, 'focusKind': 'shell-search', **entry})
                 hit = False
@@ -196,4 +197,7 @@ def snapshot(point=None):
 
 
 if __name__ == '__main__':
-    print(json.dumps(search_snapshot() if len(sys.argv)>1 and sys.argv[1]=='--search-focus' else snapshot(json.loads(sys.argv[1]) if len(sys.argv) > 1 else None)))
+    if len(sys.argv)>1 and sys.argv[1]=='--search-result':
+        from search import top_result
+        print(json.dumps(top_result()));sys.exit(0)
+    print(json.dumps(search_snapshot() if len(sys.argv)>1 and sys.argv[1]=='--search-focus' else snapshot(hazards=False) if len(sys.argv)>1 and sys.argv[1]=='--focus-only' else snapshot(json.loads(sys.argv[1]) if len(sys.argv) > 1 else None)))

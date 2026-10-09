@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'screen'))
 import portal as screen
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from hazards import TaskEscalation
+from search import verify_result
 from focus import snapshot, search_snapshot, focus_search
 screen.CAPTURE = True
 DEST, PATH, APP = screen.DEST, screen.PATH, screen.APP
@@ -183,6 +184,8 @@ class Input:
         if action.get('expected_app','').lower()!=actual:raise RuntimeError('expected_app_mismatch')
         if action.get('action')=='focus_search' and (actual!='gnome-shell' or observed.get('overviewActive') is not True or focused.get('focusKind')!='shell-search-target'):raise RuntimeError('shell_search_not_focused')
         if focused['app'].lower()=='gnome-shell' and actual!='gnome-shell-search' and action.get('keys')!='super' and action.get('action')!='focus_search':raise RuntimeError('shell_search_not_focused')
+        if action.get('task_mode') and action.get('raise_step') and action.get('keys')=='enter':
+            verify_result(action.get('raise_target') or {})
         if action.get('action')=='key' and action.get('keys')=='super':
             if any(key in action for key in ('text','point','destination','coordinate','end','direction','amount')):raise RuntimeError('invalid_standalone_super')
             return observed
@@ -322,7 +325,7 @@ def main():
             except Exception as error:
                 controller.release()
                 screen.diagnostic('failure',**screen.error_details(error),**getattr(error,'evaluation',{}))
-                emit({'id':message.get('id'),'ok':False,'errorCode':{'control_focus_changed':'focus_changed','control_overlapping_windows':'overlapping_windows','control_accessibility_unavailable':'accessibility_unavailable','control_target_focus_mismatch':'target_focus_mismatch','blocked_application':'blocked_application','task_escalation':'task_escalation','expected_app_mismatch':'expected_app_mismatch','shell_search_not_focused':'shell_search_not_focused'}.get(str(error),'operation_failed'),'delivery':controller.delivery if message.get('method')=='action' else None,'evaluation':getattr(error,'evaluation',None)})
+                emit({'id':message.get('id'),'ok':False,'errorCode':{'control_focus_changed':'focus_changed','control_overlapping_windows':'overlapping_windows','control_accessibility_unavailable':'accessibility_unavailable','control_target_focus_mismatch':'target_focus_mismatch','blocked_application':'blocked_application','task_escalation':'task_escalation','expected_app_mismatch':'expected_app_mismatch','shell_search_not_focused':'shell_search_not_focused','search_result_mismatch':'search_result_mismatch'}.get(str(error),'operation_failed'),'delivery':controller.delivery if message.get('method')=='action' else None,'evaluation':getattr(error,'evaluation',None),'resultName':getattr(error,'result_name',None)})
                 if str(error)=='control_focus_changed': continue
                 stop();return GLib.SOURCE_REMOVE
         if eof or condition&GLib.IO_ERR:stop();return GLib.SOURCE_REMOVE

@@ -40,7 +40,7 @@ export class LinuxInput extends EventEmitter {
             if(message.ok)p.resolve(message.result);
             else {const messages={task_escalation:'Control task escalation required: sensitive screen, terminal, sending target or unexpected dialog. Stop and ask.',expected_app_mismatch:'Control expected-app mismatch; no further input sent. Stop and explain.',shell_search_not_focused:'Control focus mismatch: GNOME overview search is not active and focused.',focus_changed:'Control focus changed since approval; stop and explain.',blocked_application:'Blocked application; stop and explain.'};
               const evaluation=safeEvaluation(message.evaluation);
-              const reason=evaluation?evaluationText(evaluation):messages[message.errorCode]||(['overlapping_windows','accessibility_unavailable','target_focus_mismatch'].includes(message.errorCode)?focusRefusal({'overlapping_windows':'overlapping-windows','target_focus_mismatch':'focus-mismatch'}[message.errorCode]):'RemoteDesktop operation failed');
+              const reason=message.errorCode==='search_result_mismatch'?`Control task raise refused: top search result is ${String(message.resultName||'unknown').slice(0,240)}; Enter not sent. Stop and ask.`:evaluation?evaluationText(evaluation):messages[message.errorCode]||(['overlapping_windows','accessibility_unavailable','target_focus_mismatch'].includes(message.errorCode)?focusRefusal({'overlapping_windows':'overlapping-windows','target_focus_mismatch':'focus-mismatch'}[message.errorCode]):'RemoteDesktop operation failed');
               p.reject(Object.assign(new Error(reason),{delivery:validDelivery(message.delivery)?message.delivery:p.delivery,evaluation}));
             }
           }}
@@ -64,10 +64,14 @@ export class LinuxInput extends EventEmitter {
     const child=this.child;if(!child || child.killed)return Promise.reject(new Error('RemoteDesktop session unavailable'));
     return new Promise((resolve,reject)=>{const id=randomUUID();const timer=setTimeout(()=>{const receipt=this.pending.get(id)?.delivery;this.pending.delete(id);reject(Object.assign(new Error('RemoteDesktop operation timed out'),{delivery:receipt}));child.kill('SIGTERM');},timeout);this.pending.set(id,{resolve,reject,timer});child.stdin.write(JSON.stringify({id,method,params})+'\n',error=>{if(error){clearTimeout(timer);this.pending.delete(id);reject(new Error('RemoteDesktop pipe failed'));}});});
   }
-  async inspect(point, { searchFocus = false } = {}) {
+  async inspect(point, { searchFocus = false, focusOnly = false, timeout = 10000 } = {}) {
     const env = await this.getEnvironment(this.env,this.run);
-    const {stdout} = await this.run('/usr/bin/python3',['-B',focusHelper,...(searchFocus?['--search-focus']:point?[JSON.stringify(point)]:[])],{env,timeout:10000,maxBuffer:16384});
+    const {stdout} = await this.run('/usr/bin/python3',['-B',focusHelper,...(searchFocus?['--search-focus']:focusOnly?['--focus-only']:point?[JSON.stringify(point)]:[])],{env,timeout,maxBuffer:16384});
     return JSON.parse(stdout);
+  }
+  async searchResult(){
+    const env=await this.getEnvironment(this.env,this.run);
+    const {stdout}=await this.run('/usr/bin/python3',['-B',focusHelper,'--search-result'],{env,timeout:5000,maxBuffer:8192});return JSON.parse(stdout);
   }
   async appOperation(operation,value){
     const session=await this.getEnvironment(this.env,this.run);

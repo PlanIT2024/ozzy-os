@@ -29,13 +29,15 @@ async function setup(t,{startFocus='obsidian',mode='task'}={}){
   constructor(){super();this.focus=focus(startFocus);this.actions=[];this.releases=0;this.overview=false;this.entry=false;this.hazards=[];}
   async available(){return true;}async start(){}async stop(){}async releaseAll(){this.releases++;}cancel(){this.cancelled=true;}
   async listApps(){return [app,browser,terminal,chat];}
+  async searchResult(){return this.topResult||{name:app.name,kind:'application',desktopId:app.id};}
   async resolveApp(id){const found=[app,browser,terminal,chat].find(a=>a.id===id);if(!found||id==='discord.desktop')throw new Error('Blocked application');return found;}
-  async inspect(_point,{searchFocus=false}={}){
+  async inspect(_point,{searchFocus=false,focusOnly=false}={}){
+   if(this.pendingActivation&&focusOnly){this.pendingActivation--;if(!this.pendingActivation){this.overview=false;this.focus=focus('obsidian');}}
    const shell={app:'gnome-shell',window:'Main stage',pid:5,windowId:0,elementId:0,elementPath:'/search'};
    return {focused:searchFocus?{...shell,focusKind:'shell-search-target'}:this.overview?(this.entry?{...shell,focusKind:'shell-search'}:null):this.focus,overviewActive:this.overview,hazards:this.overview?(this.shellHazards||[]):this.focus.app==='Discord'?(this.startHazards||this.hazards):this.hazards,target:_point?this.focus:null,targetKnown:true};
   }
   async launchApp(a){this.actions.push({action:'launch_app',app:a.id});if(this.raiseLaunch)this.focus=focus(a.focusNames[0]);return{};}
-  async act(action){this.actions.push(action);if(action.keys==='super'){this.overview=true;this.entry=false;}if(action.action==='focus_search')this.entry=true;if(action.expected_app==='gnome-shell-search'&&action.keys==='enter'){this.overview=false;this.focus=focus(this.failRaise?'Discord':'obsidian');}if(this.block){await this.block;}
+  async act(action){this.actions.push(action);if(action.keys==='super'){this.overview=true;this.entry=false;}if(action.action==='focus_search')this.entry=true;if(action.expected_app==='gnome-shell-search'&&action.keys==='enter'){this.overview=false;this.focus=focus(this.failRaise?'Discord':'obsidian');if(this.delayFocus){this.pendingActivation=this.delayFocus;this.overview=true;}}if(this.block){await this.block;}
    const total=action.action==='type'?[...action.text].length:1;return {delivery:{state:'all',count:total,total,unit:action.action==='type'?'characters':'key presses'}};
   }
  }
@@ -218,4 +220,20 @@ test('approval JSON survives Discord ISO-8859-1 decoding and preserves exact Uni
  const exact='hello · café 😀';const waiting=relay.request(channel,{tool:'propose_task',action:'Task plan',description:'Limits: 25 steps · 10 minutes',input:{texts:[exact]}});await until(()=>packet);
  const bytes=packet.files[0].attachment;assert.ok([...bytes].every(n=>n<128));const interpreted=bytes.toString('latin1');assert.ok(!interpreted.includes('Â'));assert.equal(JSON.parse(interpreted).texts[0],exact);assert.ok(packet.content.includes('·'));
  relay.close();await waiting;
+});
+
+test('raise waits for delayed activation, logs each fresh observation and returns a current verification frame',async t=>{
+ const b=await setup(t,{startFocus:'Discord'});b.backend.delayFocus=4;const logs=[];b.input.log=s=>logs.push(s);let clock=0;b.input.tasks.focusNow=()=>clock;b.input.tasks.focusDelay=async ms=>{clock+=ms;};
+ const ctx=await b.propose();const raised=await ctx.execute({machine:'OZZY-AI',action:'raise_app',app:app.id});assert.ok(!raised.isError,raised.content[0].text);assert.equal(JSON.parse(raised.content[0].text).actual_app,'obsidian');
+ const observations=logs.filter(s=>s.startsWith('input raise focus ')).map(s=>JSON.parse(s.slice('input raise focus '.length)));assert.equal(observations.length,4);assert.equal(observations.at(-1).overviewActive,false);assert.equal(observations.at(-1).focusedApp,'obsidian');assert.equal(observations.at(-1).elapsedMs,600);
+ assert.ok(!(await ctx.execute({machine:'OZZY-AI',action:'type',text:'hello from bIT',expected_app:'obsidian'})).isError);
+});
+test('post-capture fresh focus avoids a needless Super when launch already activated the target',async t=>{
+ const b=await setup(t,{startFocus:'Discord'}),capture=b.input.screen.capture;b.input.screen.capture=async()=>{b.backend.focus=focus('obsidian');return capture();};
+ const ctx=await b.propose(),raised=await ctx.execute({machine:'OZZY-AI',action:'raise_app',app:app.id});assert.ok(!raised.isError,raised.content[0].text);assert.deepEqual(b.backend.actions.map(a=>a.action),['launch_app']);
+});
+test('wrong top result stops fixed raise before Enter and reports only its app/file name',async t=>{
+ for(const top of [{name:'Obsidian.md',kind:'file-or-other',desktopId:null},{name:'Text Editor',kind:'application',desktopId:'org.gnome.TextEditor.desktop'},{name:'Obsidian',kind:'file-or-other',desktopId:null}]){
+  const b=await setup(t,{startFocus:'Discord'});b.backend.topResult=top;const ctx=await b.propose();const result=await ctx.execute({machine:'OZZY-AI',action:'raise_app',app:app.id});assert.ok(result.isError);assert.ok(result.content[0].text.includes(top.name));assert.match(result.content[0].text,/Enter not sent/);assert.equal(b.backend.actions.length,4);assert.ok(!b.backend.actions.some(a=>a.keys==='enter'));assert.equal(b.input.tasks.active,null);
+ }
 });

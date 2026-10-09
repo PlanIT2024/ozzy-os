@@ -560,3 +560,11 @@ hazards belong to the actual recipient. Electron null accessible-child entries
 are skipped, while genuine accessibility failures still stop task input.
 Approval JSON attachments use ASCII Unicode escapes because Discord may serve
 them with an ISO-8859-1 charset; decoding the JSON preserves the exact plan text.
+
+Raise verification refreshes focus after each capture. After Overview Enter it
+polls every 200 ms, for up to 3 seconds, until Overview is closed and the target
+app is focused; each observation is logged with time and app/window metadata.
+Enter requires the selected accessible result to be the approved installed app,
+not a similarly named file. Both node preflight and the resident input helper
+verify this; unknown result identities stop without Enter. This recognizer uses
+the installed GNOME 50 AppIcon structure and fails closed for unfamiliar UI.
