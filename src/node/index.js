@@ -66,7 +66,7 @@ export function startNode({ transport = process.env.NODE_TRANSPORT || 'local', u
         else if (m.method === 'input_action') result = await input.act(m.params || {});
         else result = await status();
         sendResult({ ok: true, result });
-      } catch (error) { if (m.method === 'screen') log('screen capture failure stage=node_capture (see helper diagnostics)'); else if (m.method.startsWith('input')) log('input failure stage=node_request'); sendResult({ ok: false, delivery:error.delivery, launchFailure:error.launchFailure===true, error: m.method.startsWith('input') ? (/^(Control|Blocked application)/.test(error.message) ? error.message : 'Input control refused or failed; check node portal diagnostics') : m.method === 'screen' ? 'Screen capture failed or desktop consent was denied/timed out' : 'Status collection failed' }); }
+      } catch (error) { if (m.method === 'screen') log('screen capture failure stage=node_capture (see helper diagnostics)'); else if (m.method.startsWith('input')) log('input failure stage=node_request'); sendResult({ ok: false, delivery:error.delivery, evaluation:error.evaluation, launchFailure:error.launchFailure===true, error: m.method.startsWith('input') ? (/^(Control|Blocked application)/.test(error.message) ? error.message : 'Input control refused or failed; check node portal diagnostics') : m.method === 'screen' ? 'Screen capture failed or desktop consent was denied/timed out' : 'Status collection failed' }); }
       finally { busy = false; }
     });
     current.start();

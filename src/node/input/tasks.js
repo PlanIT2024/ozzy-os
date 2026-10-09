@@ -31,7 +31,7 @@ export class NodeTasks {
     t.steps++;t.captureBudget--;
     this.input.emit('task_progress',{taskId:t.id,grantId:t.grantId,action:action.action,app:action.expected_app||action.app,steps:t.steps,textLength:action.action==='type'?[...action.text].length:undefined,phase:'running',willCapture:true});
   }
-  flags(raw){return this.input.session?.state.mode==='task'?{task_mode:true,raise_step:raw[RAISE]===this.active}:{};}
+  flags(raw){return this.input.session?.state.mode==='task'?{task_mode:true,raise_step:raw[RAISE]===this.active,task_step:`${raw[RAISE]===this.active?'raise_app/':''}${raw.action} #${this.active?.steps}`}:{};}
   async wait(t){while(this.input.now()-(this.input.state.lastActionAt??-Infinity)<1000){this.check(t.id);await new Promise(resolve=>setTimeout(resolve,25));}this.check(t.id);}
   async capture(t,action,result){
     this.check(t.id);const frame=await this.input.screen.capture();this.check(t.id);this.input.observe(frame);
@@ -49,12 +49,14 @@ export class NodeTasks {
     try{return await this.capture(t,action.action,result);}catch(error){if(result.delivery)error.delivery=result.delivery;throw error;}
   }
   async inspect(raw){
+    try{
     const t=this.check(raw.taskId);if(raw.grantId!==t.grantId)throw new Error('Control task grant mismatch');
     if(raw.action==='raise_app'){if(!t.plan.allowed_actions.includes('raise_app')||!t.apps.some(app=>app.id===raw.app))throw new Error('Control task scope refused: raise target outside plan');return {allowed:true};}
     const action=validateAction(raw);
     let observed;
     if(action.action!=='screenshot')observed=await this.input.backend.inspect(action.coordinate?mapPoint(action.coordinate,this.input.frame):undefined);
     assertScope(t,action,observed);return {allowed:true};
+    }catch(error){if(error.evaluation)this.input.log(`input escalation ${JSON.stringify(error.evaluation)}`);throw error;}
   }
   async action(raw){
     const t=this.check(raw.taskId);if(raw.grantId!==t.grantId)throw new Error('Control task grant mismatch');
@@ -65,6 +67,7 @@ export class NodeTasks {
       if(raw.action==='raise_app'){
         if(!t.plan.allowed_actions.includes('raise_app'))throw new Error('Control task scope refused: raise_app not allowed');
         const app=t.apps.find(app=>app.id===raw.app);if(!app)throw new Error('Control task scope refused: raise target not allowed');t.raiseApp=app;
+        const initial=(await this.input.backend.inspect()).focused;this.input.log(`input raise starting ${JSON.stringify({taskId:t.id,target:app.id,focusedApp:initial?.app,windowId:initial?.windowId})}`);
         result=await this.step(t,{action:'launch_app',app:app.id},{raising:true});
         if(!focusedAppMatches(result.focus?.focused,app)){
           const focus=(await this.input.backend.inspect()).focused;if(!focus)throw new Error('Control task raise refused: actual starting focus unknown');
@@ -81,7 +84,7 @@ export class NodeTasks {
       }else {result=await this.step(t,raw);if(raw.action==='launch_app'&&!focusedAppMatches(result.focus?.focused,t.apps.find(app=>app.id===raw.app)))throw new Error('Control task launch completed but target is not focused; ask Ozzy');}
       if(t.steps>=t.plan.max_steps)await this.end('task step cap reached');
       return result;
-    }catch(error){await this.end('task refused or failed');throw error;}
+    }catch(error){if(error.evaluation)this.input.log(`input escalation ${JSON.stringify(error.evaluation)}`);await this.end('task refused or failed');throw error;}
     finally{this.busy=false;}
   }
   async end(reason='finished'){

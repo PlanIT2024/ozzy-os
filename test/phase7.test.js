@@ -32,7 +32,7 @@ async function setup(t,{startFocus='obsidian',mode='task'}={}){
   async resolveApp(id){const found=[app,browser,terminal,chat].find(a=>a.id===id);if(!found||id==='discord.desktop')throw new Error('Blocked application');return found;}
   async inspect(_point,{searchFocus=false}={}){
    const shell={app:'gnome-shell',window:'Main stage',pid:5,windowId:0,elementId:0,elementPath:'/search'};
-   return {focused:searchFocus?{...shell,focusKind:'shell-search-target'}:this.overview?(this.entry?{...shell,focusKind:'shell-search'}:null):this.focus,overviewActive:this.overview,hazards:this.hazards,target:_point?this.focus:null,targetKnown:true};
+   return {focused:searchFocus?{...shell,focusKind:'shell-search-target'}:this.overview?(this.entry?{...shell,focusKind:'shell-search'}:null):this.focus,overviewActive:this.overview,hazards:this.overview?(this.shellHazards||[]):this.focus.app==='Discord'?(this.startHazards||this.hazards):this.hazards,target:_point?this.focus:null,targetKnown:true};
   }
   async launchApp(a){this.actions.push({action:'launch_app',app:a.id});if(this.raiseLaunch)this.focus=focus(a.focusNames[0]);return{};}
   async act(action){this.actions.push(action);if(action.keys==='super'){this.overview=true;this.entry=false;}if(action.action==='focus_search')this.entry=true;if(action.expected_app==='gnome-shell-search'&&action.keys==='enter'){this.overview=false;this.focus=focus(this.failRaise?'Discord':'obsidian');}if(this.block){await this.block;}
@@ -195,4 +195,27 @@ test('/control on defaults to task; only explicit mode:step requests step and re
   client.emit('interactionCreate',i);await until(()=>issued.length===(selected===null?1:2));
  }
  assert.deepEqual(issued.map(i=>i.options.mode),['task','step']);assert.ok(issued.every(i=>i.options.actorId==='owner'&&i.options.source==='owner slash command'));
+});
+
+test('Discord with incomplete tree -> fixed raise -> approved typing evaluates only each actual recipient',async t=>{
+ const b=await setup(t,{startFocus:'Discord'});b.backend.startHazards=['accessibility_incomplete'];const notices=[],ctx=await b.propose(plan,b.context({notify:async s=>notices.push(s)}));
+ const raised=await ctx.execute({machine:'OZZY-AI',action:'raise_app',app:app.id});assert.ok(!raised.isError,raised.content[0].text);assert.equal(JSON.parse(raised.content[0].text).actual_app,'obsidian');
+ const typed=await ctx.execute({machine:'OZZY-AI',action:'type',text:'hello from bIT',expected_app:'obsidian'});assert.ok(!typed.isError,typed.content[0].text);assert.equal(b.cards.length,1);assert.equal(b.backend.actions.length,6);assert.equal(b.backend.actions.at(-1).text,'hello from bIT');assert.equal(notices.length,0);
+});
+test('specific escalation metadata reaches thread and node logs without detected content',async t=>{
+ for(const rule of ['sensitive_screen','sending_action','unsaved_work','unexpected_dialog','credentials','accessibility_incomplete']){
+  const b=await setup(t),notices=[],logs=[];b.input.log=s=>logs.push(s);const ctx=await b.propose(plan,b.context({notify:async s=>notices.push(s)}));b.backend.hazards=[rule];
+  const result=await ctx.execute({machine:'OZZY-AI',action:'type',text:'hello from bIT',expected_app:'obsidian'});assert.ok(result.isError);assert.match(notices.join('\n'),new RegExp(rule));assert.match(notices.join('\n'),/type #1; evaluated obsidian — Note/);assert.equal(b.backend.actions.length,0);
+  assert.ok(logs.some(s=>s.includes(rule)&&s.includes('obsidian')));assert.ok(!logs.join('\n').includes('hello from bIT'));
+ }
+});
+test('overview Enter is not a send; actual Shell hazards still stop the fixed raise macro',async t=>{
+ const b=await setup(t,{startFocus:'Discord'});b.backend.shellHazards=['unexpected_dialog'];const ctx=await b.propose();const result=await ctx.execute({machine:'OZZY-AI',action:'raise_app',app:app.id});assert.ok(result.isError);assert.match(result.content[0].text,/unexpected_dialog.*raise_app\/focus_search/);assert.deepEqual(b.backend.actions.map(a=>a.action),['launch_app','key']);
+});
+test('approval JSON survives Discord ISO-8859-1 decoding and preserves exact Unicode strings',async t=>{
+ const relay=new ApprovalRelay('owner');t.after(()=>relay.close());let packet;
+ const channel={id:'A',send:async value=>{packet=value;return{id:'utf-card',edit:async()=>{}};}};
+ const exact='hello · café 😀';const waiting=relay.request(channel,{tool:'propose_task',action:'Task plan',description:'Limits: 25 steps · 10 minutes',input:{texts:[exact]}});await until(()=>packet);
+ const bytes=packet.files[0].attachment;assert.ok([...bytes].every(n=>n<128));const interpreted=bytes.toString('latin1');assert.ok(!interpreted.includes('Â'));assert.equal(JSON.parse(interpreted).texts[0],exact);assert.ok(packet.content.includes('·'));
+ relay.close();await waiting;
 });

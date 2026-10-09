@@ -98,12 +98,12 @@ export class InputControl extends EventEmitter {
       delivery=keyboard?(validDelivery(error.delivery)?error.delivery:dispatched&&delivery?.state==='none'?{...delivery,state:'uncertain'}:delivery):undefined;
       // Fixed/validated error messages only; never propagate helper input/stdout.
       if(Object.hasOwn(this.state.grants,raw?.grantId)){if(keyboard)this.state.grants[raw.grantId].lastDelivery=delivery;else delete this.state.grants[raw.grantId].lastDelivery;try{this.save();}catch{}}
-      this.log(`input failure ${JSON.stringify({ stage:'action', delivery, reason: /^(?:Blocked|Unsupported|Invalid|Typed|Coordinates|Screenshot|Take|Input rate|Control)/.test(error.message) ? error.message : 'portal action failed' })}`);
+      this.log(`input failure ${JSON.stringify({ stage:'action', delivery, ...error.evaluation, reason: /^(?:Blocked|Unsupported|Invalid|Typed|Coordinates|Screenshot|Take|Input rate|Control)/.test(error.message) ? error.message : 'portal action failed' })}`);
       await this.backend.releaseAll().catch(()=>{});
       const keepGrant=raw?.action==='launch_app'&&error.launchFailure===true&&this.session&&this.now()<Date.parse(this.session.expiresAt)&&this.session.state.count<this.session.maxActions&&!this.faulted;
       if(this.session?.state.mode==='task')await this.tasks.end('task refused or failed');
       else if(!keepGrant)await this.stop('action failure',true);
-      throw Object.assign(new Error((/^(Control|Blocked application)/.test(error.message)?error.message:'Input action refused or failed; control ended. See node diagnostics.')+(['type','key'].includes(raw?.action)?' '+deliveryText(delivery):'')),{delivery,launchFailure:keepGrant});
+      throw Object.assign(new Error((/^(Control|Blocked application)/.test(error.message)?error.message:'Input action refused or failed; control ended. See node diagnostics.')+(['type','key'].includes(raw?.action)?' '+deliveryText(delivery):'')),{delivery,launchFailure:keepGrant,evaluation:error.evaluation});
     } finally { this.busy = false; await this.backend.releaseAll().catch(()=>{}); }
   }
   async stop(reason = 'owner off', revoke = false) {

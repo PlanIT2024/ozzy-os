@@ -61,7 +61,7 @@ export class ControlTasks {
       if(raw.action==='finish_task')return;
       // Node preflight and dispatch enforce scope; there is never a step card in task mode.
       try{await controls.hub.request(g.machine,'input_task_check',{grantId:g.id,taskId:task.id,...raw});}
-      catch(error){stopped=true;await manager.finishFor(thread,'scope refused');throw error;}
+      catch(error){stopped=true;await manager.finishFor(thread,'scope refused');if(error.evaluation&&!error.notified){error.notified=true;await notify(error.message);}throw error;}
     };
     const propose=async raw=>{
       try{
@@ -89,7 +89,7 @@ export class ControlTasks {
         const bytes=validateCapture(result.frame),metadata=await sharp(bytes).metadata();if(metadata.width!==result.frame.scaled.width||metadata.height!==result.frame.scaled.height)throw new Error('Control task image geometry invalid');const focused=result.focus?.focused;
         if(attachmentRequested&&publish&&!published){published=true;await publish({buffer:bytes,mimeType:result.frame.mimeType,metadata:{machine:g.machine,capturedAt:result.frame.capturedAt,original:result.frame.original,scaled:result.frame.scaled}});}
         return {content:[{type:'text',text:JSON.stringify({machine:g.machine,steps:result.steps,focused,overviewActive:result.focus?.overviewActive,actual_app:focused?.focusKind==='shell-search'?'gnome-shell-search':focused?.app?.toLowerCase()??'unknown',instruction:'Verify this actual focus and visible result. If ambiguous or unexpected, stop and ask; do not improvise.'})},{type:'image',data:bytes.toString('base64'),mimeType:result.frame.mimeType}]};
-      }catch(error){stopped=true;await manager.finishFor(thread,'refused or failed');return {isError:true,content:[{type:'text',text:`${error.message}${validDelivery(error.delivery)?' '+deliveryText(error.delivery):''}. Task stopped; ask Ozzy. A new approved plan or /control on mode:step is required.`}]};}
+      }catch(error){stopped=true;await manager.finishFor(thread,'refused or failed');if(!error.notified){error.notified=true;await Promise.resolve(notify(`${error.message}${validDelivery(error.delivery)?' '+deliveryText(error.delivery):''}. Task stopped; ask Ozzy.`)).catch(()=>{});}return {isError:true,content:[{type:'text',text:`${error.message}${validDelivery(error.delivery)?' '+deliveryText(error.delivery):''}. Task stopped; ask Ozzy. A new approved plan or /control on mode:step is required.`}]};}
     };
     return {taskMode:true,gate,authorize,propose,execute,active:()=>Boolean(task&&!task.closed),finish:async()=>{stopped=true;await manager.finishFor(thread);},end:async reason=>{stopped=true;await manager.stop(thread,task?.id,reason);}};
   }

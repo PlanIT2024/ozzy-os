@@ -551,3 +551,12 @@ can be proposed. Owner Stop revokes that grant. Every capture attempt counts
 toward the daily screen cap, including internal raise steps. Screen images and
 plan texts are not persisted in SDK sessions, transcripts, task state or audit
 logs; the approval card deliberately contains the exact typed strings.
+
+Task escalation reports identify a rule code, step and evaluated app/window,
+without matched accessibility text. Launches do not send input to the previously
+focused window. The fixed raise macro judges Super as Shell input and subsequent
+search typing/Enter against verified Shell search; normal keyboard/pointer
+hazards belong to the actual recipient. Electron null accessible-child entries
+are skipped, while genuine accessibility failures still stop task input.
+Approval JSON attachments use ASCII Unicode escapes because Discord may serve
+them with an ISO-8859-1 charset; decoding the JSON preserves the exact plan text.

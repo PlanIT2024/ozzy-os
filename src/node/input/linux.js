@@ -3,6 +3,7 @@ import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
+import {safeEvaluation,evaluationText} from './escalation.js';
 import { validDelivery } from './delivery.js';
 import { focusRefusal } from './focus.js';
 import { sessionEnvironment } from '../screen/linux.js';
@@ -38,8 +39,9 @@ export class LinuxInput extends EventEmitter {
           else { const p=this.pending.get(message.id);if(p){clearTimeout(p.timer);this.pending.delete(message.id);
             if(message.ok)p.resolve(message.result);
             else {const messages={task_escalation:'Control task escalation required: sensitive screen, terminal, sending target or unexpected dialog. Stop and ask.',expected_app_mismatch:'Control expected-app mismatch; no further input sent. Stop and explain.',shell_search_not_focused:'Control focus mismatch: GNOME overview search is not active and focused.',focus_changed:'Control focus changed since approval; stop and explain.',blocked_application:'Blocked application; stop and explain.'};
-              const reason=messages[message.errorCode]||(['overlapping_windows','accessibility_unavailable','target_focus_mismatch'].includes(message.errorCode)?focusRefusal({'overlapping_windows':'overlapping-windows','target_focus_mismatch':'focus-mismatch'}[message.errorCode]):'RemoteDesktop operation failed');
-              p.reject(Object.assign(new Error(reason),{delivery:validDelivery(message.delivery)?message.delivery:p.delivery}));
+              const evaluation=safeEvaluation(message.evaluation);
+              const reason=evaluation?evaluationText(evaluation):messages[message.errorCode]||(['overlapping_windows','accessibility_unavailable','target_focus_mismatch'].includes(message.errorCode)?focusRefusal({'overlapping_windows':'overlapping-windows','target_focus_mismatch':'focus-mismatch'}[message.errorCode]):'RemoteDesktop operation failed');
+              p.reject(Object.assign(new Error(reason),{delivery:validDelivery(message.delivery)?message.delivery:p.delivery,evaluation}));
             }
           }}
         } catch { this.log('input helper invalid response (omitted)'); child.kill(); }
@@ -49,7 +51,7 @@ export class LinuxInput extends EventEmitter {
       err+=chunk.toString(); if(err.length>65536){err='';this.log('input helper stderr overflow (omitted)');}
       let end;while((end=err.indexOf('\n'))>=0){const line=err.slice(0,end);err=err.slice(end+1);
         try { const source=JSON.parse(line), record={};
-          for(const key of ['event','stage','responseCode','dbusError','message','errorType','errorCode','appId','sender','locked','interface','method']) if(['string','number','boolean'].includes(typeof source[key]))record[key]=typeof source[key]==='string'?source[key].replace(/(?:data:image\/|file:\/\/)\S+|[A-Za-z0-9+/=]{256,}/g,'[redacted]').slice(0,1500):source[key];
+          for(const key of ['event','stage','responseCode','dbusError','message','errorType','errorCode','appId','sender','locked','interface','method','rule','step','app','window','windowId']) if(['string','number','boolean'].includes(typeof source[key]))record[key]=typeof source[key]==='string'?source[key].replace(/(?:data:image\/|file:\/\/)\S+|[A-Za-z0-9+/=]{256,}/g,'[redacted]').slice(0,1500):source[key];
           this.log(`input portal ${JSON.stringify(record)}`);
         }catch{this.log('input helper stderr (unstructured output omitted)');}
       }

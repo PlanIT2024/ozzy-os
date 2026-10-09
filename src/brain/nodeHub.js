@@ -1,3 +1,4 @@
+import {safeEvaluation} from '../node/input/escalation.js';
 import { validDelivery } from '../node/input/delivery.js';
 import path from 'node:path';
 import { WebSocketServer } from 'ws';
@@ -106,7 +107,7 @@ export class NodeHub extends EventEmitter {
       this.emit(m.type,event);
     } else if (m.type === 'res') {
       const p = this.pending.get(m.id);
-      if (p && p.peer === peer) { this.pending.delete(m.id); clearTimeout(p.timer); if (m.ok === true) p.resolve(m.result); else p.reject(Object.assign(new Error(String(m.error || 'Node request failed')),{delivery:validDelivery(m.delivery)?m.delivery:undefined,launchFailure:m.launchFailure===true})); }
+      if (p && p.peer === peer) { this.pending.delete(m.id); clearTimeout(p.timer); if (m.ok === true) p.resolve(m.result); else p.reject(Object.assign(new Error(String(m.error || 'Node request failed')),{delivery:validDelivery(m.delivery)?m.delivery:undefined,launchFailure:m.launchFailure===true,evaluation:safeEvaluation(m.evaluation)})); }
     } else if (m.type !== 'heartbeat') throw new Error('Invalid application message');
     n.lastSeen = Date.now();
   }

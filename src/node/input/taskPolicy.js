@@ -1,4 +1,5 @@
 import { keyNames } from './actions.js';
+import {checkHazards,escalationError} from './escalation.js';
 import { terminalFocus } from './focus.js';
 export const TASK_ACTIONS=['screenshot','raise_app','launch_app','mouse_move','left_click','right_click','double_click','drag','scroll','key','type'];
 const navigation=new Set(['enter','escape','tab','shift+tab','left','right','up','down','home','end','pageup','pagedown','backspace','ctrl+a','ctrl+c','ctrl+x','ctrl+z','ctrl+y','ctrl+s','ctrl+shift+z','ctrl+left','ctrl+right','ctrl+home','ctrl+end','shift+left','shift+right','shift+up','shift+down','shift+home','shift+end','ctrl+shift+left','ctrl+shift+right']);
@@ -33,7 +34,6 @@ export function scopeApp(scope,expected){
   return matches[0];
 }
 export function assertScope(scope,action,observed,{raising=false,raiseApp}={}){
-  if(observed?.hazards?.length||observed?.targetHazards?.length)throw new Error('Control task escalation required: sensitive screen, sending action, unsaved work or unexpected dialog');
   if(!raising&&!scope.plan.allowed_actions.includes(action.action))throw new Error('Control task scope refused: action type is outside the plan');
   if(action.action==='launch_app'){
     if(!scope.apps.some(app=>app.id===action.app))throw new Error('Control task scope refused: launch target is outside the plan');return;
@@ -41,19 +41,20 @@ export function assertScope(scope,action,observed,{raising=false,raiseApp}={}){
   if(action.action==='screenshot')return;
   if(raising){
     if(action.action==='key'&&action.keys==='super')return;
+    checkHazards(action,observed,scope);
     if(action.action==='focus_search'&&action.expected_app==='gnome-shell')return;
     if(action.expected_app==='gnome-shell-search'&&(action.action==='type'&&action.text===raiseApp.name||action.action==='key'&&action.keys==='enter'))return;
     throw new Error('Control task scope refused: invalid raise macro step');
   }
+  checkHazards(action,observed,scope);
   const app=scopeApp(scope,action.expected_app),kind=appKind(app);
-  if(kind.terminal||terminalFocus(observed?.focused))throw new Error('Control task escalation required: terminal input is step-only');
-  if(observed?.hazards?.length||observed?.targetHazards?.length)throw new Error('Control task escalation required: sensitive screen, sending action, unsaved work or unexpected dialog');
+  if(kind.terminal||terminalFocus(observed?.focused))throw escalationError('terminal_input',action,observed,scope);
   if(action.action==='type'){
     if(!scope.plan.texts.includes(action.text)&&!scope.plan.free_text_apps.includes(app.id))throw new Error('Control task scope refused: text is not an exact approved string');
-    if((kind.messaging||kind.browser)&&/[\n\r\t]/.test(action.text))throw new Error('Control task escalation required: text could submit or send');
+    if((kind.messaging||kind.browser)&&/[\n\r\t]/.test(action.text))throw escalationError('sending_action',action,observed,scope);
   }
   if(action.action==='key'){
-    if(dangerousKeys(action.keys)||action.keys.includes('super')||action.keys==='enter'&&(kind.messaging||kind.browser))throw new Error('Control task escalation required: dangerous or sending key needs step mode');
+    if(dangerousKeys(action.keys)||action.keys.includes('super')||action.keys==='enter'&&(kind.messaging||kind.browser))throw escalationError(action.keys==='enter'&&(kind.messaging||kind.browser)?'sending_action':'dangerous_key',action,observed,scope);
     if(!navigation.has(action.keys)&&!scope.plan.key_combos.includes(action.keys))throw new Error('Control task scope refused: key combo was not approved');
   }
 }

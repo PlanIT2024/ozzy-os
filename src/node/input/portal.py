@@ -12,6 +12,7 @@ from gi.repository import Gio, GLib
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'screen'))
 import portal as screen
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from hazards import TaskEscalation
 from focus import snapshot, search_snapshot, focus_search
 screen.CAPTURE = True
 DEST, PATH, APP = screen.DEST, screen.PATH, screen.APP
@@ -171,10 +172,13 @@ class Input:
 
     def check_focus(self, action, point=None):
         observed = search_snapshot() if action.get('action')=='focus_search' else snapshot(point)
-        if action.get('task_mode') and (observed.get('hazards') or observed.get('targetHazards')):raise RuntimeError('task_escalation')
+        shell_super=action.get('action')=='key' and action.get('keys')=='super' and not any(key in action for key in ('text','point','destination','coordinate','end'))
+        if action.get('task_mode') and not shell_super and (observed.get('hazards') or observed.get('targetHazards')):
+            rule=(observed.get('hazards',[])+observed.get('targetHazards',[]))[0]
+            raise TaskEscalation(rule.replace('-','_'),action,observed)
         focused = observed['focused']
         if not focused: raise RuntimeError('control_accessibility_unavailable')
-        if action.get('task_mode') and re.search(r'terminal|console|kgx|ptyxis|konsole|kitty|alacritty|xterm|wezterm|tilix|terminator',focused['app'],re.I) and not (action.get('action')=='key' and action.get('keys')=='super'):raise RuntimeError('task_escalation')
+        if action.get('task_mode') and re.search(r'terminal|console|kgx|ptyxis|konsole|kitty|alacritty|xterm|wezterm|tilix|terminator',focused['app'],re.I) and not (action.get('action')=='key' and action.get('keys')=='super'):raise TaskEscalation('terminal_input',action,observed)
         actual='gnome-shell-search' if focused.get('focusKind')=='shell-search' and observed.get('overviewActive') is True else focused['app'].lower()
         if action.get('expected_app','').lower()!=actual:raise RuntimeError('expected_app_mismatch')
         if action.get('action')=='focus_search' and (actual!='gnome-shell' or observed.get('overviewActive') is not True or focused.get('focusKind')!='shell-search-target'):raise RuntimeError('shell_search_not_focused')
@@ -317,8 +321,8 @@ def main():
                 emit({'id':message['id'],'ok':True,'result':result})
             except Exception as error:
                 controller.release()
-                screen.diagnostic('failure',**screen.error_details(error))
-                emit({'id':message.get('id'),'ok':False,'errorCode':{'control_focus_changed':'focus_changed','control_overlapping_windows':'overlapping_windows','control_accessibility_unavailable':'accessibility_unavailable','control_target_focus_mismatch':'target_focus_mismatch','blocked_application':'blocked_application','task_escalation':'task_escalation','expected_app_mismatch':'expected_app_mismatch','shell_search_not_focused':'shell_search_not_focused'}.get(str(error),'operation_failed'),'delivery':controller.delivery if message.get('method')=='action' else None})
+                screen.diagnostic('failure',**screen.error_details(error),**getattr(error,'evaluation',{}))
+                emit({'id':message.get('id'),'ok':False,'errorCode':{'control_focus_changed':'focus_changed','control_overlapping_windows':'overlapping_windows','control_accessibility_unavailable':'accessibility_unavailable','control_target_focus_mismatch':'target_focus_mismatch','blocked_application':'blocked_application','task_escalation':'task_escalation','expected_app_mismatch':'expected_app_mismatch','shell_search_not_focused':'shell_search_not_focused'}.get(str(error),'operation_failed'),'delivery':controller.delivery if message.get('method')=='action' else None,'evaluation':getattr(error,'evaluation',None)})
                 if str(error)=='control_focus_changed': continue
                 stop();return GLib.SOURCE_REMOVE
         if eof or condition&GLib.IO_ERR:stop();return GLib.SOURCE_REMOVE
@@ -331,4 +335,4 @@ def main():
 if __name__=='__main__':
     try:main()
     except Exception as error:
-        screen.diagnostic('failure',**screen.error_details(error));sys.exit(1)
+        screen.diagnostic('failure',**screen.error_details(error),**getattr(error,'evaluation',{}));sys.exit(1)

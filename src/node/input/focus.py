@@ -50,7 +50,9 @@ def search_target():
             if not state.contains(Atspi.StateType.SHOWING) or not state.contains(Atspi.StateType.FOCUSED):continue
             pending=deque([(window,0)]);visited=0
             while pending and visited<5000:
-                node,depth=pending.popleft();visited+=1;states=node.get_state_set()
+                node,depth=pending.popleft();visited+=1
+                if node is None:continue
+                states=node.get_state_set()
                 if states.contains(Atspi.StateType.SHOWING) and (states.contains(Atspi.StateType.MODAL) or node.get_role()==Atspi.Role.DIALOG):raise RuntimeError('shell_search_not_focused')
                 if states.contains(Atspi.StateType.EDITABLE):
                     if states.contains(Atspi.StateType.FOCUSED) and not in_overview(node):raise RuntimeError('shell_search_not_focused')
@@ -90,6 +92,7 @@ def shell_entry(window):
     while pending and visited < 1000:
         node, depth = pending.popleft()
         visited += 1
+        if node is None:continue
         states = node.get_state_set()
         if depth>0 and not states.contains(Atspi.StateType.SHOWING):continue
         if (states.contains(Atspi.StateType.SHOWING) and
@@ -109,7 +112,7 @@ def snapshot(point=None):
     overview=overview_active()
     focused, shell_focused, targets = [], [], []
     windows = []
-    hazard_records = {};target_flags=[]
+    hazard_records = {};target_flags={}
     incomplete = False
     for i in range(min(desktop.get_child_count(), 100)):
         app = desktop.get_child_at_index(i)
@@ -134,10 +137,12 @@ def snapshot(point=None):
                 if active:
                     focused.append(record)
                     try:hazard_records[(record['pid'],record['windowId'])]=screen_hazards(window,record['window'])
-                    except Exception:hazard_records[(record['pid'],record['windowId'])]=['accessibility-incomplete']
+                    except Exception:hazard_records[(record['pid'],record['windowId'])]=['accessibility_incomplete']
                 if app_name.lower() == 'gnome-shell' and overview is True:
                     entry = shell_entry(window)
                     if entry is not None:
+                        try:hazard_records[(record['pid'],record['windowId'])]=screen_hazards(window,record['window'])
+                        except Exception:hazard_records[(record['pid'],record['windowId'])]=['accessibility_incomplete']
                         shell_focused.append({**record, 'focusKind': 'shell-search', **entry})
                 hit = False
                 contains = inside(point, bounds)
@@ -148,8 +153,8 @@ def snapshot(point=None):
                             target_node=component.get_accessible_at_point(int(point['x']), int(point['y']), Atspi.CoordType.SCREEN)
                             hit = bool(target_node)
                             if target_node:
-                                try:target_flags+=target_hazards(target_node)
-                                except Exception:target_flags.append('accessibility-incomplete')
+                                try:target_flags.setdefault((record['pid'],record['windowId']),[]).extend(target_hazards(target_node))
+                                except Exception:target_flags.setdefault((record['pid'],record['windowId']),[]).append('accessibility_incomplete')
                     except Exception:
                         pass  # Valid top-level bounds remain useful without an inner tree.
                 overlay = states.contains(Atspi.StateType.MODAL) or window.get_role() in (
@@ -185,7 +190,7 @@ def snapshot(point=None):
     if overview is True:
         if overview_active() is not True:overview=False;focus=None;focus_reason='focus-mismatch'
         elif not shell_focused:focus=None;focus_reason='missing-accessibility'
-    return {'hazards':hazard_records.get((focus['pid'],focus['windowId']),[]) if focus else [],'targetHazards':sorted(set(target_flags)),'overviewActive':overview,'focused': focus, 'focusReason': focus_reason, 'target': target,
+    return {'hazards':hazard_records.get((focus['pid'],focus['windowId']),[]) if focus else [],'targetHazards':sorted(set(target_flags.get((target['pid'],target['windowId']),[]))) if target else [],'overviewActive':overview,'focused': focus, 'focusReason': focus_reason, 'target': target,
             'targetKnown': known if point else None, 'targetReason': reason,
             'targetSource': source, 'candidates': targets}
 

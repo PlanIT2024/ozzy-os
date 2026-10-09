@@ -161,3 +161,73 @@ remain enabled. `git diff --check` passes.
 Services were reinstalled, then restored to the standard brain/node entrypoints;
 both are active/running on `/usr/bin/node`. Existing SCREEN_ENABLED and
 CONTROL_ENABLED values were preserved. No transport, relay or crypto change.
+
+## Raise escalation / encoding fix — 2026-10-09
+
+### Root cause
+
+The failed 14:01:25 action was the macro's **launch_app**, before any launch,
+Super press or Enter. The old error combined all hazard flags into one message.
+Read-only inspection of the same real Discord and Obsidian windows reproduced
+an `AttributeError`: AT-SPI returns null child entries in these Electron trees,
+and the scanner called `get_state_set()` on null. `focus.py` converted that into
+`accessibility-incomplete`; the task policy then called it a generic sensitive/
+sending/unsaved/dialog escalation. The original log did not preserve individual
+flags, so the exact old flag attribution is reconstructed from that real-tree
+reproduction and the executed code path.
+
+There was a separate recipient bug: launch_app checked the *pre-launch* focused
+Discord window's hazards, although it sends no input to that window. The fixed
+policy checks the approved installed desktop entry for launches; screenshot
+inspection is also permitted without treating it as input. The macro's lone
+Super goes to Shell and does not inherit the previous app's hazards. Shell
+search typing/Enter require verified Shell search focus and evaluate that Shell
+window. Actual pointer/keyboard actions evaluate their actual recipient window;
+background or overlapping-window labels do not contaminate the selected target.
+
+### Reporting and tests
+
+Distinct rules include `sensitive_screen`, `credentials`, `unsaved_work`,
+`unexpected_dialog`, `sending_action`, `closing_action`, `clipboard_paste`,
+`accessibility_incomplete`, `terminal_input`, and `dangerous_key`. Node/helper
+failures carry rule, macro step number and evaluated app/window identity through
+the existing application RPC. The thread receives the specific failure directly.
+Matched accessibility labels and editable values are never included. Focus and
+Discord blocks remain enforced independently; genuine recipient hazards still
+stop input, including between typed characters.
+
+The real hazard/focus/resident-helper modules are exercised with accessibility
+fixtures containing Electron null children, background sending controls, stale
+Discord ACTIVE state while Shell search has actual focus, and a real password
+role appearing in the Shell recipient. The full node/brain test reproduces
+Discord → fixed raise → exact approved typing with one card; separate tests
+verify genuine Shell hazards stop the macro and reason metadata reaches the
+thread without typed/detected content.
+
+### Attachment encoding
+
+The old Discord card itself contained correct Unicode. Fetching its attachment
+showed valid UTF-8 bytes but HTTP `application/json; charset=ISO-8859-1`, which
+renders the UTF-8 middle dot as `Â·` in charset-aware viewers. Approval JSON now
+uses ASCII Unicode escapes, preserving exact strings under either decoding.
+The regression includes `hello · café 😀`, checks ASCII attachment bytes and
+round-trips the exact text after ISO-8859-1 decoding. Card text remains Unicode.
+
+Full suite before live proof: **161 passed, 0 failed, 0 skipped**. Services were
+reinstalled on `/usr/bin/node`; SCREEN_ENABLED and CONTROL_ENABLED preserved.
+
+### Live proof status
+
+A real SDK run, production brain code/Discord ApprovalRelay and deployed
+bit-node.service prepared a single Obsidian plan in the live-proof thread.
+Card: https://discord.com/channels/1554194124595269672/1558211996900397128/1558212034611384322
+The owner was told before input and asked to approve while Discord was focused.
+Result to be recorded after owner approval; no successful input is claimed here.
+
+The 16:18 live proposal was **not approved** before expiry. At 16:28:10 EDT
+the node ended the grant with count 0 and exited the helper cleanly. The real
+SDK run recorded one card, `accepted:false`, zero steps/actions, and reason
+`expired`. The normal brain/node units were restored after the diagnostic.
+The owner was asked for readiness before any fresh live proposal. The required
+approved Discord-focused raise-and-type proof remains pending; this fix is not
+reported as live-verified. Final full suite: **161/161 passed**.

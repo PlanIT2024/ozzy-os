@@ -45,6 +45,9 @@ export function commands() {
     new SlashCommandBuilder().setName('reset').setDescription('Start a fresh session in this thread or DM'),
   ].map(c => c.toJSON());
 }
+// Discord serves JSON attachments as ISO-8859-1 despite UTF-8 upload bytes.
+// ASCII JSON escapes are charset-independent and decode to the exact reviewed strings.
+export function asciiJSON(value, replacer=null, space=2){return JSON.stringify(value,replacer,space).replace(/[\u007f-\uffff]/g,char=>'\\u'+char.charCodeAt(0).toString(16).padStart(4,'0'));}
 export class ApprovalRelay {
   constructor(owner, { timeout = 600000 } = {}) { this.owner = owner; this.timeout = timeout; this.pending = new Map(); }
   async request(channel, { tool, file, url, action, description, input, diff, signal, approvalId, preview }) {
@@ -54,7 +57,7 @@ export class ApprovalRelay {
       new ButtonBuilder().setCustomId(`approve:${id}:yes`).setLabel('✅ Approve').setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId(`approve:${id}:no`).setLabel('❌ Deny').setStyle(ButtonStyle.Danger));
     // Show the complete proposed operation; large edits are reviewable as an attachment.
-    const review = diff || JSON.stringify({ tool, ...(file ? { file } : {}), ...(action ? { action, description } : {}), ...input }, null, 2);
+    const review = diff || asciiJSON({ tool, ...(file ? { file } : {}), ...(action ? { action, description } : {}), ...input }, null, 2);
     const target = url || file || [action, description].filter(Boolean).join(' · ') || tool;
     const longWarnings=[...(description?.includes('page content could steer bIT')?['⚠️ page content could steer bIT — browser task taints this thread']:[]),...(/FREE TEXT IN/.test(description||'')?['⚠️ FREE TEXT enabled: see the exact apps in the attached plan; never terminals']:[])].join('\n');
     const label = target?.length > 1700 ? (url?'Full URL in proposed-operation.json (including query string)':`${action||tool}: full operation in proposed-operation.json${longWarnings?'\n'+longWarnings:''}`) : target;
