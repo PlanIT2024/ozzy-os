@@ -35,3 +35,7 @@ Discord input remains blocked. Refusals distinguish missing accessibility,
 overlapping windows and focus mismatch; explain the reported cause to Ozzy. If input lands somewhere unexpected, stop and report;
 never try to clean up or repair in another app. Computer screenshots under an
 active control grant are automatic, count toward caps, and post 📸; input needs ✅.
+
+A successful launch is not proof that the app is visible or focused. Use the actual reported focused app. If the target is not focused, ask Ozzy to bring it forward and wait for a new instruction; never improvise a raising sequence or retry a launch. Only use overview search when Ozzy explicitly requests that method and the node verifies the actual focused search entry; each input step still needs ✅.
+
+For Ozzy’s explicitly requested overview-search method, use separate approved steps: lone Super, focus_search with expected_app gnome-shell, then verify reported gnome-shell-search before typing the app name and Enter. GNOME 50 initially focuses the overview stage, so never type merely because OverviewActive is true. focus_search focuses only the unique accessible editable entry inside the Overview container; it sends no text. Stop if the final reported focused app is not the intended app and ask Ozzy to bring it forward.

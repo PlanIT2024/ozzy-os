@@ -449,8 +449,19 @@ visible Shell tree breadth-first, and requires a focused editable text/entry.
 It prunes hidden app-grid branches, expands the former depth-15 limit, and binds
 the entry's D-Bus object path (Shell get_id() values can be zero), along with its
 PID/window snapshot. The overview property is read again after the scan; closing
-it prevents treating fallback application focus as search. This detector's new
-live input verification is pending the owner's presence, as requested; see proof.
+it prevents treating fallback application focus as search. Live GNOME 50.1
+verification now passes; see the round-5 proof.
+
+On this GNOME version, Super opens the overview with stage focus, not search-entry
+focus. For an owner-requested overview raise, use separately approved steps:
+Super → `focus_search` (`expected_app: "gnome-shell"`) → type the app name
+(`expected_app: "gnome-shell-search"`) → Enter (same expected app).
+`focus_search` uses standard [AT-SPI GrabFocus](https://gnome.pages.gitlab.gnome.org/at-spi2-core/devel-docs/doc-org.a11y.atspi.Component.html#org-a11y-atspi-component-grabfocus).
+It binds the unique editable entry under the localized Overview container,
+requires active overview and observed Shell stage focus, rejects ambiguity and
+modals, rechecks the approved entry identity, and verifies actual search focus
+afterwards. It sends no text. All existing grant, taint, schedule, cap, rate,
+approval and screenshot rules apply. No Shell extension or setting change is needed.
 
 `launch_app(app)` is a separate tool under the same active, untainted, unscheduled
 control/screen grants. It resolves installed entries with GioUnix DesktopAppInfo
@@ -466,6 +477,13 @@ names need an exact installed desktop id. Discord desktop identities are blocked
 Launching a permitted app from Discord does not type/click into Discord; all
 subsequent input remains independently blocked or expected-focus checked. The
 fresh verification screenshot and actual focused app are returned afterwards.
+Installed desktop metadata supplies exact allowed app identities for the
+post-launch focus check. A successful launch with unmatched or unknown focus
+ends the current task and asks Ozzy to bring the target forward; it retains the
+grant's original expiry, and cannot improvise another input step. Background
+launching does not guarantee an existing window will be raised. An explicitly
+requested overview raise uses the checked sequence above, never an automatic
+fallback after a launch.
 bIT prefers this tool over keyboard launching, never presses Super twice in a
 row, and stops/explains on refusal without trying variations.
 

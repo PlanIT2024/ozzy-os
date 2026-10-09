@@ -6,7 +6,7 @@ import { canonical } from '../../relay/wire.js';
 import { validateAction, actionLog, mapPoint } from '../node/input/actions.js';
 import { validateCapture } from '../node/screen/image.js';
 import { deliveryPlan, deliveryText, validDelivery } from '../node/input/delivery.js';
-import { assertSafeFocus, terminalFocus } from '../node/input/focus.js';
+import { assertSafeFocus, terminalFocus, focusedAppMatches } from '../node/input/focus.js';
 import sharp from '../node/screen/sharp.js';
 export class ControlGrants {
   constructor({root=ROOT,hub,screens,now=()=>Date.now(),cap=Number(process.env.BIT_CONTROL_MAX_ACTIONS??40)}={}){
@@ -127,7 +127,16 @@ export class ControlGrants {
         const text=result.content.find(block=>block.type==='text'),image=result.content.find(block=>block.type==='image');
         const metadata=JSON.parse(text.text);frame={...metadata,data:image.data,mimeType:image.mimeType,bytes:Buffer.from(image.data,'base64').length};
         if(action.action==='screenshot'){const actual=await this.hub.request(g.machine,'input_focus',{grantId:g.id,action:'screenshot'}).catch(()=>null);result.content.push({type:'text',text:`Actual app identifier: ${actual?.focused?.focusKind==='shell-search'&&actual?.overviewActive===true?'gnome-shell-search':actual?.focused?.app?.toLowerCase()??'unknown'}. Focused: ${actual?.focused?.app??'unknown'} — ${actual?.focused?.window??'unknown'}. Overview active: ${actual?.overviewActive===true}. Use the intended identifier as expected_app; stop if it does not match your intent.`});}
-        if(action.action!=='screenshot'){const actual=await this.hub.request(g.machine,'input_focus',{grantId:g.id,action:'screenshot'}).catch(()=>null);result.content.unshift({type:'text',text:`Reported focused application after action: ${actual?.focused?.app??'unknown'} — ${actual?.focused?.window??'unknown'}. Verify this matches the intended application before proposing type/key. If unexpected, stop and report; do not repair in another app.`});}
+        if(action.action!=='screenshot'){
+          const actual=await this.hub.request(g.machine,'input_focus',{grantId:g.id,action:'screenshot'}).catch(()=>null);
+          result.content.unshift({type:'text',text:`Reported focused application after action: ${actual?.focused?.app??'unknown'} — ${actual?.focused?.window??'unknown'}. Actual app identifier: ${actual?.focused?.focusKind==='shell-search'&&actual?.overviewActive===true?'gnome-shell-search':actual?.focused?.app?.toLowerCase()??'unknown'}. Overview active: ${actual?.overviewActive===true}. Verify this matches the intended application before proposing type/key. If unexpected, stop and ask Ozzy to bring the target forward; do not repair in another app.`});
+          if(action.action==='launch_app'&&!skipped&&!focusedAppMatches(actual?.focused,receipt.approvedApp)){
+            stopped=true;
+            const message=`${receipt.approvedApp.name} launch completed, but it is not verified as focused. Focused: ${actual?.focused?.app??'unknown'} — ${actual?.focused?.window??'unknown'}. Ozzy, please bring ${receipt.approvedApp.name} forward, then ask me to continue. Current task stopped; no keyboard or mouse input will be sent or improvised. The control grant keeps its original expiry.`;
+            result.isError=true;result.content.unshift({type:'text',text:message});
+            await Promise.resolve(notify(message)).catch(()=>console.warn('Launch focus notice unavailable'));
+          }
+        }
         this.audit(g,action,skipped?'restored_without_input':'executed',receipt.approvalId);
         if(skipped)result.content.unshift({type:'text',text:'Control session restored; no input was sent. Inspect this fresh screenshot and request a new step approval.'});
         if(g.count>=g.maxActions){stopped=true;await this.off(thread,'action cap',true,generation);}

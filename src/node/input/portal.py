@@ -11,7 +11,7 @@ from gi.repository import Gio, GLib
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'screen'))
 import portal as screen
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from focus import snapshot
+from focus import snapshot, search_snapshot, focus_search
 screen.CAPTURE = True
 DEST, PATH, APP = screen.DEST, screen.PATH, screen.APP
 RD = 'org.freedesktop.portal.RemoteDesktop'
@@ -169,12 +169,13 @@ class Input:
         self.notify('NotifyPointerMotionAbsolute','udd',(node,x,y))
 
     def check_focus(self, action, point=None):
-        observed = snapshot(point)
+        observed = search_snapshot() if action.get('action')=='focus_search' else snapshot(point)
         focused = observed['focused']
         if not focused: raise RuntimeError('control_accessibility_unavailable')
         actual='gnome-shell-search' if focused.get('focusKind')=='shell-search' and observed.get('overviewActive') is True else focused['app'].lower()
         if action.get('expected_app','').lower()!=actual:raise RuntimeError('expected_app_mismatch')
-        if focused['app'].lower()=='gnome-shell' and actual!='gnome-shell-search' and action.get('keys')!='super':raise RuntimeError('shell_search_not_focused')
+        if action.get('action')=='focus_search' and (actual!='gnome-shell' or observed.get('overviewActive') is not True or focused.get('focusKind')!='shell-search-target'):raise RuntimeError('shell_search_not_focused')
+        if focused['app'].lower()=='gnome-shell' and actual!='gnome-shell-search' and action.get('keys')!='super' and action.get('action')!='focus_search':raise RuntimeError('shell_search_not_focused')
         if action.get('action')=='key' and action.get('keys')=='super':
             if any(key in action for key in ('text','point','destination','coordinate','end','direction','amount')):raise RuntimeError('invalid_standalone_super')
             return observed
@@ -188,6 +189,20 @@ class Input:
         return observed
 
     def action(self,action):
+        if action.get('action')=='focus_search':
+            self.delivery=None;screen.stage('focus_search');screen.availability(self.bus)
+            if self.closed or not self.session:raise RuntimeError('control_closed')
+            if action.get('expected_app')!='gnome-shell' or any(key in action for key in ('keys','text','point','destination','coordinate','end')):raise RuntimeError('unsupported_action')
+            self.check_focus(action)
+            def allowed():
+                # AT-SPI focus must stop with the portal too: unlike key sends,
+                # GrabFocus does not itself reference the portal session handle.
+                while GLib.MainContext.default().pending():GLib.MainContext.default().iteration(False)
+                if self.closed or not self.session:return False
+                screen.availability(self.bus)
+                return True
+            try:return focus_search(action.get('expectedFocus'),allowed)
+            finally:self.release()
         self.delivery={'state':'none','count':0,'total':len(action.get('text','')) if action.get('action')=='type' else len(action.get('keys','').split('+')) if action.get('action')=='key' else 0,'unit':'characters' if action.get('action')=='type' else 'key presses'}
         self.progress()
         screen.stage('action')

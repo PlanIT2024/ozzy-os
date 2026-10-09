@@ -48,7 +48,7 @@ export class InputControl extends EventEmitter {
     const action = validateAction(raw);
     if(shellSuper(action)&&this.session.state.lastInput==='super')throw new Error('Control refused a consecutive Super press before approval; use launch_app instead');
     const point = action.coordinate ? mapPoint(action.coordinate,this.frame) : undefined;
-    const result = await this.backend.inspect(point).catch(error=>{if(shellSuper(action))return{focused:null,focusReason:'missing-accessibility'};throw new Error(focusRefusal('missing-accessibility','focus'));});
+    const result = await this.backend.inspect(point,{searchFocus:action.action==='focus_search'}).catch(error=>{if(shellSuper(action))return{focused:null,focusReason:'missing-accessibility'};throw new Error(focusRefusal('missing-accessibility','focus'));});
     if (action.end) result.destination = await this.backend.inspect(mapPoint(action.end,this.frame)).catch(()=>{throw new Error(focusRefusal('missing-accessibility'));});
     if(action.action!=='screenshot'){assertSafeFocus(result,action,result.focused);if(result.destination)assertSafeFocus(result.destination,action,result.focused);}
     return result;
@@ -73,7 +73,7 @@ export class InputControl extends EventEmitter {
       if (action.action!=='launch_app' && (!this.frame || this.now()-Date.parse(this.frame.capturedAt) > 120000)) throw new Error('Take a recent screenshot before input');
       const mapped = { ...action, ...(action.coordinate ? { point: mapPoint(action.coordinate,this.frame) } : {}), ...(action.end ? { destination: mapPoint(action.end,this.frame) } : {}) };
       if(action.action!=='launch_app'){
-      const observed = await this.backend.inspect(mapped.point).catch(error=>{if(shellSuper(action))return{focused:null,focusReason:'missing-accessibility'};throw new Error(focusRefusal('missing-accessibility','focus'));});
+      const observed = await this.backend.inspect(mapped.point,{searchFocus:action.action==='focus_search'}).catch(error=>{if(shellSuper(action))return{focused:null,focusReason:'missing-accessibility'};throw new Error(focusRefusal('missing-accessibility','focus'));});
       assertSafeFocus(observed,action,raw.expectedFocus);
       if (mapped.destination) assertSafeFocus(await this.backend.inspect(mapped.destination).catch(()=>{throw new Error(focusRefusal('missing-accessibility'));}),action,raw.expectedFocus);
       }else{const app=await this.backend.resolveApp(action.app);if(JSON.stringify(app)!==JSON.stringify(raw.approvedApp))throw new Error('Control installed app changed since approval');}

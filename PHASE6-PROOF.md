@@ -515,3 +515,134 @@ advertising **status, screen, input** at 16:37:16.
 Actual `.env` was not edited; **CONTROL_ENABLED=true** is preserved.
 Transport, relay, crypto and web policy implementations are unchanged.
 The older round-3 overview typing proof remains outside this round's live tests.
+
+## Round 5 — raising existing windows and verified search focus
+
+Live tests: **Oct 8, 2026**. Final deployment: **Oct 9, 2026**.
+
+### Findings and limits of the cause diagnosis
+
+The node journal's Oct 8 **16:40:09–10 EDT** launch completed successfully for
+`obsidian_obsidian.desktop`, with launcher PID **344041**. That proves the
+launcher ran; it does not prove an existing window was activated. The service
+had neither XDG_ACTIVATION_TOKEN nor DESKTOP_STARTUP_ID. Its bare
+Gio.AppLaunchContext returns no startup token on this installation. The snap's
+installed desktop entry has DBusActivatable=false and StartupNotify=false.
+
+[GNOME's activation explanation](https://blogs.gnome.org/shell-dev/2024/09/20/understanding-gnome-shells-focus-stealing-prevention/)
+describes why an existing window needs a valid focus handoff. The background
+launch path does not supply one. However, lack of a token is not proven to be
+the sole cause for this snap: an explicitly supplied click-derived token also
+did not produce verified Obsidian focus. No Mutter token-rejection trace was
+available, so this proof does not claim the compositor rejected that token
+rather than the application failing to consume/forward it.
+
+AT-SPI at **16:44 EDT** found both Obsidian windows **SHOWING=true,
+ICONIFIED=false, ACTIVE=false**. They were not minimized. SHOWING does not
+prove visible stacking/workspace membership. GNOME's GetWindows introspection
+returned AccessDenied; the installed Shell source allowlists the GTK/GNOME
+portal implementations. No security setting was changed to bypass that limit.
+The historical workspace and whether GNOME showed an “is ready” banner could
+not be independently established, and are not invented here. The installed
+windowAttentionHandler.js confirms such banners are generated on attention
+requests; that source inspection is not evidence one appeared during this run.
+
+### Evaluation and chosen approach
+
+Installed versions: **GNOME Shell 50.1-0ubuntu1.3**, Mutter
+**50.1-0ubuntu2.4**, GTK **4.22.4**, portal **1.21.1**.
+
+1. **Overview search works**, with one necessary focus step. Live RemoteDesktop
+   Super was confirmed delivered, OverviewActive became true, but AT-SPI did
+   not report a focused editable entry. The installed searchController.js
+   resets entry focus when entering the overview and routes initial printable
+   stage input to startSearch. We retained the stricter rule: never type into
+   an unverified stage. Standard
+   [AT-SPI Component.GrabFocus](https://gnome.pages.gitlab.gnome.org/at-spi2-core/devel-docs/doc-org.a11y.atspi.Component.html)
+   successfully focused the unique editable entry inside the Overview container.
+   Its actual focused path was `/org/a11y/atspi/accessible/2256`, with Shell PID
+   **5161** and elementId **0**. Only then did guarded typing and Enter run.
+2. **Activation token experiment:** the owner was told before each attempt and
+   clicked a temporary GTK “Bring Obsidian forward” button. The corrected
+   `bit-round5-activation-v2.service` recorded a real event time and token
+   presence, set the token through GDK's launch context environment and launched
+   the installed snap via the same Gio manager API. At **16:49 EDT**, launch
+   returned success with PID **347687**, but the subsequent focus snapshot
+   showed Terminal, not Obsidian. Token bytes were never logged or persisted.
+   This was not a reliable raising method for the tested app; an initial
+   diagnostic-script error happened before launch and is not counted as token
+   rejection. Docs: [GDK launch context](https://docs.gtk.org/gdk4/class.AppLaunchContext.html),
+   [startup token API](https://docs.gtk.org/gio/method.AppLaunchContext.get_startup_notify_id.html).
+3. **No Shell extension needed or installed.** The working overview route uses
+   existing desktop accessibility plus portal input and preserves approval for
+   every step. It avoids adding privileged Shell code or a general activation
+   D-Bus endpoint. No toolkit-accessibility setting was changed; it remained
+   false during the live tests, and this Shell entry was still accessible.
+
+The chosen owner-requested route is separately approved **Super → focus_search
+(expected_app gnome-shell) → type app name (gnome-shell-search) → Enter
+(gnome-shell-search)**. This is not an automatic retry/fallback after a failed
+launch; bIT must hand back when a launch leaves the target unfocused.
+
+### Production implementation and live proof
+
+`focus_search` is a computer action under the same owner-only button, grants,
+untainted/unscheduled gates, screenshot requirement, action cap and rate limit.
+The card shows actual Shell stage focus separately from the intended search
+entry. It accepts no text, keys or coordinates. The node and resident helper
+both bind/recheck the approved entry path/PID/window metadata. The helper also
+processes pending portal closure and rechecks the active, unlocked session
+immediately before GrabFocus, preventing focus after GNOME Stop. The helper finds
+only the unique visible editable candidate under the localized Overview
+container, refuses modals/ambiguity/incomplete scans, requires actual Shell
+stage focus and active overview, then verifies actual editable search focus.
+Typing and Enter still require gnome-shell-search and their original independent
+pre-card and pre-execution checks. No stage focus is mislabeled as search focus.
+
+Every non-screenshot result now reports the actual app identifier, window and
+OverviewActive state. Launches additionally compare real focus with exact
+identifiers derived from the approved installed desktop metadata, including its
+executable and startup WM class. Model target text and window-title substrings
+cannot satisfy this comparison. Unknown or different focus stops the current
+task, posts a request for Ozzy to bring the target forward, and preserves the
+original grant expiry. The stopped context cannot improvise subsequent steps.
+
+All real attempts were announced. Earlier separate probes were interrupted by
+foreground terminal activity, so the successful fixed sequence ran inside one
+user service without intervening terminal approvals. The production-path
+`bit-round5-production-input.service` used the real InputControl, LinuxInput and
+resident portal helper, with a short diagnostic grant and fixed app-name input:
+
+- **17:02:29–48 EDT:** Super confirmed **1/1** key-down; actual Shell entry
+  focus established through **focus_search**; `Obsidian` confirmed **8/8**
+  characters; Enter confirmed **1/1** key-down.
+- Final actual focus: **obsidian — Obsidian**, existing GUI PID **242874**,
+  windowId **24**, OverviewActive=false. This proves the existing app window
+  was raised; it does not assume the “Untitled 1” note body is the chosen window.
+- At **17:03:02**, the diagnostic grant/session closed after **4 actions** and
+  the helper exited **0**. All diagnostic services/monitors are inactive.
+  No control session is left active beyond the existing stored restore token.
+- Verification captures stayed in memory; the portal's temporary source files
+  emitted portal_image_deleted before encoding. No image bytes were logged or
+  retained. No credentials were typed, Discord was not clicked/typed into,
+  and no app settings, workspace settings or extension installation occurred.
+
+### Validation and final deployment
+
+**Full `/usr/bin/node --test`: 133 passed, 0 failed.** Four new tests cover:
+launch success with wrong/unknown focus and owner handback; stopped-context
+non-improvisation with grant retention; exact desktop-derived focus identities;
+focus_search button waiting, field restrictions and changed-entry refusal;
+and Python Overview-only target lookup, uniqueness, identity binding and no
+editable-name reads. Existing expected-app, Discord block, delivery receipt,
+real SDK/image persistence, grant, taint, schedule and restart tests all pass.
+The final scan hardening rejects truncated/deep/pathless trees rather than
+trusting a partially inspected target; tests were rerun after that change.
+
+Final reinstall: `/usr/bin/node scripts/services.js install`, **Oct 9
+11:23:09 EDT / 15:23:09 UTC**. Both units active/running on `/usr/bin/node`:
+brain **399810**, node **399811**. Discord connected at 11:23:11; the node
+retried startup ECONNREFUSED, connected/authenticated at 11:23:12 and advertised
+**status, screen, input**. `.env` was not edited; **CONTROL_ENABLED=true** is
+preserved. Relay, transports, crypto and web policy are unchanged. The earlier
+round-3 GNOME search-focus live check is now covered by the successful run above.

@@ -62,9 +62,9 @@ export class LinuxInput extends EventEmitter {
     const child=this.child;if(!child || child.killed)return Promise.reject(new Error('RemoteDesktop session unavailable'));
     return new Promise((resolve,reject)=>{const id=randomUUID();const timer=setTimeout(()=>{const receipt=this.pending.get(id)?.delivery;this.pending.delete(id);reject(Object.assign(new Error('RemoteDesktop operation timed out'),{delivery:receipt}));child.kill('SIGTERM');},timeout);this.pending.set(id,{resolve,reject,timer});child.stdin.write(JSON.stringify({id,method,params})+'\n',error=>{if(error){clearTimeout(timer);this.pending.delete(id);reject(new Error('RemoteDesktop pipe failed'));}});});
   }
-  async inspect(point) {
+  async inspect(point, { searchFocus = false } = {}) {
     const env = await this.getEnvironment(this.env,this.run);
-    const {stdout} = await this.run('/usr/bin/python3',['-B',focusHelper,...(point?[JSON.stringify(point)]:[])],{env,timeout:10000,maxBuffer:16384});
+    const {stdout} = await this.run('/usr/bin/python3',['-B',focusHelper,...(searchFocus?['--search-focus']:point?[JSON.stringify(point)]:[])],{env,timeout:10000,maxBuffer:16384});
     return JSON.parse(stdout);
   }
   async appOperation(operation,value){

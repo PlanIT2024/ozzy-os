@@ -21,6 +21,64 @@ def overview_active():
     except Exception:return None
 
 
+def in_overview(node):
+    # GNOME exposes the localized Overview container, not a stable entry name.
+    # Never inspect an editable node's name or value.
+    parent = node.get_parent()
+    for _ in range(35):
+        if parent is None:return False
+        states = parent.get_state_set()
+        if states.contains(Atspi.StateType.MODAL) or parent.get_role() == Atspi.Role.DIALOG:return False
+        if not states.contains(Atspi.StateType.EDITABLE) and parent.get_name() == GLib.dgettext('gnome-shell', 'Overview'):return True
+        parent = parent.get_parent()
+    return False
+
+
+def search_target():
+    """Find a unique editable Overview entry; no text or app input is sent."""
+    Atspi.set_timeout(700,700)
+    if overview_active() is not True:raise RuntimeError('shell_search_not_focused')
+    desktop=Atspi.get_desktop(0);matches=[]
+    for i in range(min(desktop.get_child_count(),100)):
+        app=desktop.get_child_at_index(i)
+        if app.get_name().lower()!='gnome-shell':continue
+        for j in range(min(app.get_child_count(),100)):
+            window=app.get_child_at_index(j);state=window.get_state_set()
+            if not state.contains(Atspi.StateType.SHOWING) or not state.contains(Atspi.StateType.FOCUSED):continue
+            pending=deque([(window,0)]);visited=0
+            while pending and visited<5000:
+                node,depth=pending.popleft();visited+=1;states=node.get_state_set()
+                if states.contains(Atspi.StateType.SHOWING) and (states.contains(Atspi.StateType.MODAL) or node.get_role()==Atspi.Role.DIALOG):raise RuntimeError('shell_search_not_focused')
+                if states.contains(Atspi.StateType.EDITABLE):
+                    if states.contains(Atspi.StateType.FOCUSED) and not in_overview(node):raise RuntimeError('shell_search_not_focused')
+                    if states.contains(Atspi.StateType.VISIBLE) and node.get_role() in (Atspi.Role.ENTRY,Atspi.Role.TEXT) and in_overview(node):
+                        matches.append((node,{'app':'gnome-shell','window':window.get_name()[:500],
+                            'pid':app.get_process_id(),'windowId':window.get_id(),'focusKind':'shell-search-target',
+                            'elementId':node.get_id(),'elementPath':getattr(node,'path',None)}))
+                count=node.get_child_count()
+                if count>5000 or (depth>=35 and count):raise RuntimeError('control_accessibility_unavailable')
+                for k in range(count):pending.append((node.get_child_at_index(k),depth+1))
+            if pending:raise RuntimeError('control_accessibility_unavailable')
+    if len(matches)!=1 or not matches[0][1]['elementPath'] or overview_active() is not True:raise RuntimeError('control_accessibility_unavailable')
+    return matches[0]
+
+
+def search_snapshot():
+    _node,focused=search_target()
+    return {'overviewActive':True,'focused':focused,'target':None,'targetKnown':None,'candidates':[]}
+
+
+def focus_search(expected, allowed=lambda: True):
+    node,focused=search_target()
+    if focused!=expected:raise RuntimeError('control_focus_changed')
+    if not allowed():raise RuntimeError('control_closed')
+    if not node.get_component_iface() or not node.get_component_iface().grab_focus():raise RuntimeError('control_accessibility_unavailable')
+    observed=snapshot()
+    actual=observed.get('focused') or {}
+    if observed.get('overviewActive') is not True or actual.get('focusKind')!='shell-search' or actual.get('elementPath')!=focused.get('elementPath') or actual.get('pid')!=focused.get('pid'):raise RuntimeError('control_focus_changed')
+    return {'focused':actual}
+
+
 def shell_entry(window):
     """Resolve Shell keyboard focus from states; Main stage need not be ACTIVE."""
     pending = deque([(window, 0)])
@@ -123,4 +181,4 @@ def snapshot(point=None):
 
 
 if __name__ == '__main__':
-    print(json.dumps(snapshot(json.loads(sys.argv[1]) if len(sys.argv) > 1 else None)))
+    print(json.dumps(search_snapshot() if len(sys.argv)>1 and sys.argv[1]=='--search-focus' else snapshot(json.loads(sys.argv[1]) if len(sys.argv) > 1 else None)))

@@ -21,6 +21,9 @@ def description(info):
     values = (info.get_id(), info.get_name(), info.get_executable(), info.get_startup_wm_class(), info.get_commandline())
     if blocked(values): raise RuntimeError('blocked_application')
     return {'id': info.get_id(), 'name': info.get_name(),
+            'focusNames': sorted({str(value).lower() for value in
+                (info.get_name(), info.get_id().removesuffix('.desktop'),
+                 info.get_startup_wm_class(), Path(info.get_executable() or '').name) if value}),
             'fingerprint': hashlib.sha256(Path(info.get_filename()).read_bytes()).hexdigest()}
 
 
@@ -37,10 +40,10 @@ def resolve(request):
     return info, description(info)
 
 
-def launch(approved):
+def launch(approved, context=None):
     info, current = resolve(approved.get('id'))
     if current != approved: raise RuntimeError('desktop_app_changed_since_approval')
-    context = Gio.AppLaunchContext()
+    context = context or Gio.AppLaunchContext()
     if info.get_boolean('DBusActivatable'):
         loop=GLib.MainLoop();result={};cancellable=Gio.Cancellable()
         def finished(app,reply,*_):

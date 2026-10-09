@@ -572,6 +572,102 @@ test('launch_app resolves before button, binds desktop identity, reports actual 
   await input.start({grantId:'blocked-launch',expiresAt:new Date(now+600000).toISOString(),maxActions:40});await assert.rejects(input.resolveApp({grantId:'blocked-launch',app:'Discord'}),/Blocked/);
 });
 
+test('launch completes without target focus: real focus is reported, owner asked to raise, task stops and grant survives',async t=>{
+  const b=await brain(t);await b.controls.on('A','OZZY-AI',{withScreen:true});const grant=b.controls.active('A'),notices=[];
+  const app={id:'obsidian_obsidian.desktop',name:'Obsidian',focusNames:['obsidian','md.obsidian.obsidian'],fingerprint:'a'.repeat(64)},original=b.hub.request;
+  const discord={...focus,app:'Discord',window:'#bit'};
+  b.hub.request=async(machine,method,params)=>method==='input_resolve_app'?app:method==='input_focus'?{focused:discord}:original(machine,method,params);
+  const context=b.context({approve:async()=>true,notify:text=>notices.push(text)}),raw={machine:'OZZY-AI',action:'launch_app',app:'Obsidian',target:'Launch Obsidian'};
+  const result=await context.execute(raw);
+  assert.ok(result.isError);assert.match(result.content[0].text,/Focused: Discord/);assert.match(result.content[0].text,/please bring Obsidian forward/);
+  assert.equal(b.controls.active('A').id,grant.id);assert.equal(b.controls.active('A').expiresAt,grant.expiresAt);assert.equal(b.controls.active('A').count,1);
+  const before=b.calls.length;assert.ok((await context.execute({machine:'OZZY-AI',action:'key',keys:'super',expected_app:'discord',target:'raise'})).isError);assert.equal(b.calls.length,before);
+  assert.equal(notices.filter(text=>text.includes('please bring Obsidian forward')).length,1);assert.ok(!notices.join('\n').includes('Delivery'));
+  b.hub.request=async(machine,method,params)=>method==='input_resolve_app'?app:method==='input_focus'?Promise.reject(new Error('missing accessibility')):original(machine,method,params);
+  // Pre-card inaccessible focus remains fail-closed, rather than trusting launch identity.
+  assert.ok((await b.context({approve:async()=>true}).execute(raw)).isError);
+});
+
+test('desktop focus matching uses exact installed identifiers, never model target or title substrings',async()=>{
+  const {focusedAppMatches}=await import('../src/node/input/focus.js');
+  const app={name:'Text Editor',id:'org.gnome.TextEditor.desktop',focusNames:['gnome-text-editor','org.gnome.texteditor']};
+  assert.equal(focusedAppMatches({app:'gnome-text-editor'},app),true);
+  assert.equal(focusedAppMatches({app:'org.gnome.TextEditor'},app),true);
+  assert.equal(focusedAppMatches({app:'Discord',window:'Text Editor — Obsidian'},app),false);
+  assert.equal(focusedAppMatches({app:'not-gnome-text-editor'},app),false);
+  assert.equal(focusedAppMatches(null,app),false);
+});
+
+test('focus_search is a separately approved bounded action; entry identity changes abort before execution',async t=>{
+  const stage={app:'gnome-shell',window:'Main stage',pid:5,windowId:0,focusKind:'shell-search-target',elementId:0,elementPath:'/org/a11y/atspi/accessible/99'};
+  const observed={overviewActive:true,focused:stage,candidates:[]};
+  const {assertSafeFocus}=await import('../src/node/input/focus.js');
+  const raw={action:'focus_search',expected_app:'gnome-shell'};
+  assertSafeFocus(observed,raw,stage);
+  assert.throws(()=>assertSafeFocus({...observed,overviewActive:false},raw,stage),/focus mismatch/);
+  assert.throws(()=>assertSafeFocus(observation,raw,focus),/mismatch/);
+  for(const extras of [{text:'bad'},{keys:'enter'},{coordinate:[0,0]}])assert.throws(()=>validateAction({...raw,...extras}));
+  assert.throws(()=>validateAction({...raw,expected_app:'gnome-shell-search'}));
+  const root=fixture(t),backend=new Backend();backend.observation=observed;
+  const input=new InputControl({root,enabled:true,screen:{available:async()=>true},backend,log:()=>{}});t.after(()=>input.close());
+  await input.start({grantId:'search-focus',expiresAt:new Date(Date.now()+600000).toISOString(),maxActions:40});input.observe(frame());
+  const receipt=await input.inspect({grantId:'search-focus',...raw});backend.observation={...observed,focused:{...stage,elementPath:'/changed'}};
+  await assert.rejects(input.act({grantId:'search-focus',...raw,expectedFocus:receipt.focused}),/changed since approval/);assert.equal(backend.actions.length,0);
+  const b=await brain(t);await b.controls.on('A','OZZY-AI',{withScreen:true});const request=b.hub.request;let card,release;
+  b.hub.request=async(machine,method,params)=>method==='input_focus'?observed:request(machine,method,params);
+  const context=b.context({approve:value=>{card=value;return new Promise(resolve=>release=resolve);}});
+  await context.execute({machine:'OZZY-AI',action:'screenshot',target:'desktop'});
+  const pending=context.execute({machine:'OZZY-AI',...raw,target:'Focus the unique Overview search entry'});await until(()=>card);
+  assert.match(card.description,/Expected: gnome-shell/);assert.match(card.description,/Focused: gnome-shell/);assert.match(card.description,/focus_search/);
+  assert.equal(b.calls.filter(c=>c.method==='input_action').length,0);release(true);await pending;assert.equal(b.calls.filter(c=>c.method==='input_action').length,1);
+});
+
+test('Python focus_search finds only the unique Overview entry and binds it again before grabbing focus',()=>{
+  const code=`import importlib.util,sys
+s=importlib.util.spec_from_file_location('focus',sys.argv[1]);p=importlib.util.module_from_spec(s);s.loader.exec_module(p)
+class State:
+ def __init__(self,values):self.values=values
+ def contains(self,value):return value in self.values
+class Node:
+ def __init__(self,name,role,values=[],children=[]):
+  self.name=name;self.role=role;self.values=values;self.children=children;self.parent=None;self.path='/entry';self.grabs=0
+  for child in children:child.parent=self
+ def get_parent(self):return self.parent
+ def get_name(self):return self.name
+ def get_role(self):return self.role
+ def get_state_set(self):return State(self.values)
+ def get_child_count(self):return len(self.children)
+ def get_child_at_index(self,i):return self.children[i]
+ def get_id(self):return 0
+ def get_process_id(self):return 5
+ def get_component_iface(self):return self
+ def grab_focus(self):self.grabs+=1;return True
+show=p.Atspi.StateType.SHOWING;visible=p.Atspi.StateType.VISIBLE;focused=p.Atspi.StateType.FOCUSED;editable=p.Atspi.StateType.EDITABLE
+entry=Node('never read editable name',p.Atspi.Role.TEXT,[visible,editable]);entry.get_name=lambda:(_ for _ in ()).throw(AssertionError('editable name read'))
+overview=Node('Overview',p.Atspi.Role.PANEL,[show],[entry]);window=Node('Main stage',p.Atspi.Role.WINDOW,[show,focused],[overview]);app=Node('gnome-shell',p.Atspi.Role.APPLICATION,[],[window]);desktop=Node('desktop',p.Atspi.Role.DESKTOP_FRAME,[],[app]);p.Atspi.get_desktop=lambda i:desktop;p.overview_active=lambda:True
+expected=p.search_snapshot()['focused'];assert expected['focusKind']=='shell-search-target'
+p.snapshot=lambda:{'overviewActive':True,'focused':{**expected,'focusKind':'shell-search'}}
+try:p.focus_search(expected,lambda:False);assert False
+except RuntimeError as error:assert str(error)=='control_closed'
+assert entry.grabs==0
+assert p.focus_search(expected)['focused']['focusKind']=='shell-search';assert entry.grabs==1
+entry.path='/changed'
+try:p.focus_search(expected);assert False
+except RuntimeError as error:assert str(error)=='control_focus_changed'
+assert entry.grabs==1
+entry.path='/entry';overview.name='Login'
+try:p.search_target();assert False
+except RuntimeError:pass
+overview.name='Overview';overview.children.append(Node('second',p.Atspi.Role.TEXT,[visible,editable]));overview.children[-1].parent=overview
+try:p.search_target();assert False
+except RuntimeError:pass
+p.overview_active=lambda:False
+try:p.search_target();assert False
+except RuntimeError:pass
+print('search focus verified')`;
+  assert.match(execFileSync('/usr/bin/python3',['-B','-c',code,path.resolve('src/node/input/focus.py')],{encoding:'utf8'}),/search focus verified/);
+});
+
 test('installed desktop resolver rejects commands, ambiguous entries, blocked apps and changed approval fingerprints',()=>{
   const helper=path.resolve('src/node/input/apps.py');
   const code=`import importlib.util,sys,tempfile,pathlib
