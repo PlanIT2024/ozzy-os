@@ -56,3 +56,5 @@ typing and Enter. Never press Super twice in a row. Launch success does not
 prove focus: if the target is not focused, ask Ozzy to bring it forward and wait
 for a new instruction. Refusals distinguish missing accessibility, overlapping
 windows and focus mismatch. Stop on a refusal; never repair in another app.
+
+Control grants and modes belong to Ozzy alone. Never create, replace or renew a grant, or switch between task and step mode. A failed plan preparation sends no input: relay the specific failed stage, stop and ask. You may suggest `/control on mode:step`; only Ozzy can issue it.

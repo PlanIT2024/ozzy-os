@@ -22,7 +22,7 @@ export class InputControl extends EventEmitter {
   save() { try { saveJSON(this.file,this.state); } catch { this.faulted=true; throw new Error('Control state persistence failed'); } }
   async available() { return !this.faulted && this.enabled && await this.screen.available() && await this.backend.available(); }
   observe(frame) { this.frame = { original: frame.original, scaled: frame.scaled, monitors: frame.monitors, capturedAt: frame.capturedAt }; }
-  async start({ grantId, expiresAt, maxActions, mode='step' }) {
+  async start({ grantId, expiresAt, maxActions, mode='task' }) {
     if (this.enabled && this.backend instanceof UnsupportedInput) return this.backend.start();
     if (!this.enabled || !await this.available()) throw new Error('Input capability unavailable');
     if (typeof grantId !== 'string' || !/^[a-zA-Z0-9-]{1,80}$/.test(grantId) || !Number.isFinite(Date.parse(expiresAt)) || Date.parse(expiresAt) <= this.now() || Date.parse(expiresAt) > this.now()+600000 || !Number.isInteger(maxActions) || maxActions < 1) throw new Error('Invalid control grant');
@@ -39,7 +39,7 @@ export class InputControl extends EventEmitter {
     if (Date.parse(expiresAt) <= this.now() || state.count >= state.maxActions) throw new Error('Control grant expired or capped at node');
     this.save();
     this.session = { grantId, expiresAt, maxActions: state.maxActions, state };
-    this.log(`input start ${JSON.stringify({grantId,expiresAt,maxActions:this.session.maxActions})}`);
+    this.log(`input start ${JSON.stringify({grantId,expiresAt,maxActions:this.session.maxActions,mode})}`);
     this.timer = setTimeout(() => { void this.stop('expired', true); }, Date.parse(expiresAt)-this.now()); this.timer.unref?.();
     try { await this.backend.start(); }
     catch { await this.stop('portal start failed', true); throw new Error('RemoteDesktop consent failed; see node portal diagnostics'); }

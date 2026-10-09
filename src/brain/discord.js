@@ -228,6 +228,8 @@ export function createDiscord({ runner, hub, budget, scheduler, reminders, env =
         case 'control': {
           if (!runner.controls) throw new Error('Control grants unavailable');
           const action = interaction.options.getSubcommand();
+          const requestedMode = action === 'on' ? interaction.options.getString('mode') : null;
+          console.log(`Control owner command: ${JSON.stringify({actorId: interaction.user.id, thread: channel.id, action, requestedMode, effectiveMode: action === 'on' ? requestedMode || 'task' : undefined})}`);
           if (action === 'status') response = runner.controls.describe(channel.id);
           else if (action === 'off') { await runner.controls.off(channel.id); response = 'Computer control ended in this conversation, Ozzy.'; }
           else if (!channel.isThread() && !channel.isDMBased()) response = 'Use /control inside a #bit thread or DM, Ozzy.';
@@ -240,7 +242,7 @@ export function createDiscord({ runner, hub, budget, scheduler, reminders, env =
             else {
               try {
                 runner.controls.subscribe(channel.id, text => sendText(channel,text));
-                await runner.controls.on(channel.id,machine.machine,{ withScreen: interaction.options.getBoolean('with-screen') === true, mode: interaction.options.getString('mode')||'task', tainted: Boolean(runner.web?.session(runner.webKeys?.[channel.id] || runner.sessions?.[channel.id] || channel.id).tainted) });
+                await runner.controls.on(channel.id,machine.machine,{ withScreen: interaction.options.getBoolean('with-screen') === true, mode: requestedMode||'task', actorId: interaction.user.id, source:'owner slash command', tainted: Boolean(runner.web?.session(runner.webKeys?.[channel.id] || runner.sessions?.[channel.id] || channel.id).tainted) });
                 response = `🖱️ controlling ${machine.machine}. ${runner.controls.describe(channel.id)} Input is equivalent to shell access; task mode needs one complete approved plan. Step mode waits for a button on every input action.`;
               } catch(error) { response = error.message; }
             }

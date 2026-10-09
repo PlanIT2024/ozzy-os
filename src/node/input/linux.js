@@ -71,20 +71,21 @@ export class LinuxInput extends EventEmitter {
     const session=await this.getEnvironment(this.env,this.run);
     // Desktop apps need session/locale vars, never bIT/Discord/API credentials.
     const env=Object.fromEntries(Object.entries(session).filter(([key])=>/^(?:PATH|HOME|USER|LOGNAME|LANG|LANGUAGE|LC_.*|TZ|DISPLAY|WAYLAND_DISPLAY|DBUS_SESSION_BUS_ADDRESS|XDG_.*|CONTROL_BLOCKED_APPS)$/.test(key)));
+    const maxBuffer=operation==='list'?1024*1024:65536, label=operation==='list'?'app listing':operation==='resolve'?'app resolution':'launch';
     let packet,exitCode=0,signal;
-    try{const {stdout}=await this.run('/usr/bin/python3',['-B',appsHelper,operation,JSON.stringify(value)],{env,timeout:10000,maxBuffer:16384});packet=JSON.parse(stdout);}
+    try{const {stdout}=await this.run('/usr/bin/python3',['-B',appsHelper,operation,JSON.stringify(value)],{env,timeout:10000,maxBuffer});packet=JSON.parse(stdout);}
     catch(error){exitCode=typeof error.code==='number'?error.code:undefined;signal=error.signal;try{packet=JSON.parse(error.stdout);}catch{
-      const reason=error.killed?'helper timed out':error.code==='ENOENT'?'helper executable not found':error instanceof SyntaxError?'invalid helper response':'helper failed'+(exitCode!==undefined?' (exit '+exitCode+')':'');
-      this.log(`input launch failure ${JSON.stringify({stage:operation,code:'helper_protocol',exitCode,signal,reason})}`);
-      throw Object.assign(new Error('Control launch failed: '+reason),{launchFailure:true});
+      const reason=error.code==='ERR_CHILD_PROCESS_STDIO_MAXBUFFER'?'helper output exceeded '+maxBuffer+'-byte limit':error.killed?'helper timed out':error.code==='ENOENT'?'helper executable not found':error instanceof SyntaxError?'invalid helper response':'helper failed'+(exitCode!==undefined?' (exit '+exitCode+')':'');
+      this.log(`input launch failure ${JSON.stringify({stage:operation,code:'helper_protocol',nativeCode:error.code,exitCode,signal,reason})}`);
+      throw Object.assign(new Error('Control '+label+' failed at '+operation+': '+reason),{launchFailure:true});
     }}
     if(!packet?.ok){
-      const detail=packet?.error,known=['blocked_application','invalid_app','app_not_installed_or_ambiguous','desktop_app_changed_since_approval','app_launch_failed','app_exit','gio_error','helper_error','unsupported_operation','activation_timeout'];
+      const detail=packet?.error,known=['blocked_application','invalid_app','app_not_installed_or_ambiguous','desktop_app_changed_since_approval','app_launch_failed','app_exit','gio_error','helper_error','unsupported_operation','activation_timeout','descriptor_read_failed'];
       const code=known.includes(detail?.code)?detail.code:'helper_error';
       const message=typeof detail?.message==='string'?detail.message.replace(/https?:\/\/\S+|(?:token|password|secret|authorization)\s*[:=]\s*\S+|[A-Za-z0-9+/=]{80,}/ig,'[redacted]').slice(0,500):'launch helper failed';
       const safety=['blocked_application','invalid_app','desktop_app_changed_since_approval'].includes(code);
       this.log(`input launch failure ${JSON.stringify({stage:operation,code,message,domain:detail?.domain,nativeCode:detail?.nativeCode,exitCode,signal})}`);
-      throw Object.assign(new Error((safety?'Control launch safety refusal: ':'Control launch failed: ')+message),{launchFailure:!safety});
+      throw Object.assign(new Error((safety?'Control launch safety refusal at '+operation+': ':'Control '+label+' failed at '+operation+': ')+message),{launchFailure:!safety});
     }
     this.log(`input launch ${JSON.stringify({stage:operation,app:packet.result?.launched?.id??packet.result?.id,startup:packet.result?.startup,exitCode})}`);
     return packet.result;

@@ -57,7 +57,7 @@ test('real SDK computer steps are approved once, verify with images and never pe
     const originalSession = runner.sessions.thread;
     // Simulate upgrade: the first turn exists only in the old SDK session.
     runner.transcript.reset('thread');
-    await runner.controls.on('thread','OZZY-AI',{withScreen:true});
+    await runner.controls.on('thread','OZZY-AI',{withScreen:true,mode:'step'});
     assert.match(await runner.run('thread','Use computer screenshot for OZZY-AI once and describe it.',{notify:async()=>{},approve:async()=>{approvals++;return true;}}),/blue rectangle/);
     assert.equal(runner.sessions.thread, originalSession);
     assert.match(await runner.run('thread', 'What was my first message? Use computer to type the fixture text.', { notify: async () => {}, approve:async()=>{approvals++;return true;} }), /Orion/);

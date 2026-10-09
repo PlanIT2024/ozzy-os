@@ -80,3 +80,84 @@ handback rules supplement the node checks; this is not a general visual safety
 classifier. Browser plans deliberately taint the entire thread. A new web
 result ends the current control session. No Shell extension, X11 path or new
 transport/relay/cryptography behavior was introduced.
+
+
+## Live preparation failure fix — 2026-10-09
+
+### Root cause and reproduction
+
+At 12:35:35 EDT the node logged a `list` helper-protocol failure. The actual
+Gio helper successfully produced **24,794 bytes for 96 installed apps**, but
+`LinuxInput.appOperation` used a **16,384-byte stdout limit**. Node raised
+`ERR_CHILD_PROCESS_STDIO_MAXBUFFER`; the original reporting discarded that
+string error code and reported only “helper failed”. The desktop-file
+fingerprint calculation itself was working.
+
+A transient user-service diagnosis confirmed the size and overflow. At
+12:43:52, the same `input_list_apps` request was reproduced through the
+**actual running bit-node.service**, via the existing authenticated NodeHub.
+That diagnostic's task-mode grant ended with zero actions.
+
+Listing now has a bounded 1 MiB limit; individual resolution/launch replies
+have a 64 KiB limit. Overflow errors retain their native code and operation
+stage, with no raw stdout exposed. Desktop-file read failures identify the
+app and exception type. List filtering includes StartupWMClass so a blocked
+entry cannot abort the entire list merely because its display name differs.
+Preparation errors post their specific listing/resolution/fingerprint stage
+directly to the thread, stop that attempt, and leave the grant's mode unchanged.
+
+### Why the second grant used step mode
+
+The journal records an **owner slash interaction at 12:36:07**, followed by
+replacement of the original grant and creation of the new one at 12:36:08.
+The corresponding Discord response identifies the owner and `control on`
+interaction `1558156116179943576` and reports step approvals. bIT had suggested
+`/control on mode:step` in its 12:35:39 reply. The deployed handler selected
+`getString('mode') || 'task'`: step mode therefore corresponds to an explicit
+step option on that owner interaction, not an automatic tool fallback.
+The old log did not retain the raw option payload, so that last attribution
+is inferred from the deployed code path rather than a recorded option value.
+
+For completeness, the lower-level brain/node APIs previously still defaulted
+to step for old tests. Both now default to task; the existing Phase 6 tests
+explicitly request step. Step-session restoration explicitly preserves its
+original mode. New journals record requested/effective mode and owner ID;
+grant audit records retain mode, actor and source. bIT has no grant/mode tool,
+and its guidance forbids replacing, renewing or switching grants. Preparation
+failure tests assert no replacement `input_start` and no mode change.
+
+### Real cancelled-card proof (passed)
+
+At **12:48:39–12:48:42 EDT**, after reinstalling the fixed node:
+
+- A preparation-only harness used the production `runBrain`, `ControlTasks`,
+  NodeHub and Discord ApprovalRelay code in a transient user service, with
+  **bit-node.service** handling the real helper requests. The normal brain
+  was temporarily stopped to avoid concurrent ownership of its hub/lock.
+- Task-mode grant `f05af421-4ab3-45e4-bd08-e283fcdd017a` listed all 96 apps and
+  resolved `obsidian_obsidian.desktop` and its actual fingerprint.
+- The genuine plan card was sent and fetched back from Discord, with its two
+  owner decision buttons and exact `hello from bIT` text in the plan.
+- The approval was **cancelled without approval**. The fetched final card had
+  “❌ Denied … (cancelled)” and no buttons. No task scope was started.
+- Node action count was **0**; no application launch, key, pointer action or
+  screenshot ran. The portal helper exited cleanly and the diagnostic grants
+  were revoked. No remote-control session was left active.
+
+[Cancelled proof card](https://discord.com/channels/1554194124595269672/1558159268648058892/1558159280564211742).
+Approval ID: `07ada87e-2d98-4793-bb01-baa02bf88813`.
+
+This proves real app discovery, scope preparation and card delivery/cancellation;
+it does not claim the original approved Obsidian typing test has passed.
+
+### Final validation and deployment
+
+Full suite: **156 passed, 0 failed, 0 skipped**. New coverage runs the real
+Gio helper with 160 fixture desktop files, proves the old buffer would overflow,
+checks fingerprints and blocked WM classes, and verifies preparation failures,
+task defaults, explicit step selection and owner provenance. All earlier tests
+remain enabled. `git diff --check` passes.
+
+Services were reinstalled, then restored to the standard brain/node entrypoints;
+both are active/running on `/usr/bin/node`. Existing SCREEN_ENABLED and
+CONTROL_ENABLED values were preserved. No transport, relay or crypto change.

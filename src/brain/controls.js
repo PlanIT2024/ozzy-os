@@ -22,7 +22,7 @@ export class ControlGrants {
     for(const [thread,g]of Object.entries(this.state.grants))if(!g.revokedAt)this.arm(thread,g);
   }
   save(){saveJSON(this.file,this.state);}
-  audit(grant,action,decision,approvalId){fs.mkdirSync(path.join(this.root,'data'),{recursive:true,mode:0o700});fs.appendFileSync(path.join(this.root,'data/audit.log'),JSON.stringify({event:'control',time:new Date(this.now()).toISOString(),machine:grant?.machine,grantId:grant?.id,approvalId,decision,delivery:grant?.lastDelivery,...(action?actionLog(action):{})})+'\n',{mode:0o600});}
+  audit(grant,action,decision,approvalId){fs.mkdirSync(path.join(this.root,'data'),{recursive:true,mode:0o700});fs.appendFileSync(path.join(this.root,'data/audit.log'),JSON.stringify({event:'control',time:new Date(this.now()).toISOString(),machine:grant?.machine,grantId:grant?.id,approvalId,decision,mode:grant?.mode,actorId:grant?.actorId,source:grant?.source,delivery:grant?.lastDelivery,...(action?actionLog(action):{})})+'\n',{mode:0o600});}
   async warn(thread,g){
     if(g.revokedAt||this.state.grants[thread]?.id!==g.id||g.warnedAt||this.now()>=Date.parse(g.expiresAt))return;
     g.warnedAt=new Date(this.now()).toISOString();this.save();
@@ -37,7 +37,7 @@ export class ControlGrants {
   active(thread){try{return this.grant(thread);}catch{return null;}}
   describe(thread){try{const g=this.grant(thread);return `Control: ${g.machine} until ${g.expiresAt} · ${g.count}/${g.maxActions} steps · ${g.mode==='task'?'task plan needs ✅; scoped steps autonomous':'input steps need ✅'}; screenshots automatic · preview ${this.state.previews[thread]?'on':'off'}.`;}catch(error){return error.message;}}
   preview(thread,value){this.state.previews[thread]=Boolean(value);this.save();}
-  async on(thread,machine,{withScreen=false,tainted=false,mode='step'}={}){
+  async on(thread,machine,{withScreen=false,tainted=false,mode='task',actorId,source='owner command'}={}){
     if(!['step','task'].includes(mode))throw new Error('Choose task or step control mode');
     if(tainted)throw new Error('Web-tainted threads cannot control a computer, Ozzy. Start a fresh thread.');
     machine=canonical(machine);const n=this.hub.list().find(n=>canonical(n.machine)===machine&&n.online&&n.capabilities?.includes('input')&&n.capabilities?.includes('screen'));
@@ -45,7 +45,7 @@ export class ControlGrants {
     let screen=this.screens.active(thread);
     if(!screen||screen.machine!==machine){if(!withScreen)throw new Error('Use /screen on for this machine first, or /control on with-screen:true.');this.screens.on(thread,machine);screen=this.screens.grant(thread);}
     for(const [other,g]of Object.entries(this.state.grants))if(!g.revokedAt&&(g.machine===machine||other===thread))await this.off(other,'replaced');
-    const g={id:randomUUID(),machine,mode,issuedAt:new Date(this.now()).toISOString(),expiresAt:new Date(Math.min(this.now()+600000,Date.parse(screen.expiresAt))).toISOString(),count:0,maxActions:this.cap,actions:[],screenId:screen.id};
+    const g={id:randomUUID(),machine,mode,actorId,source,issuedAt:new Date(this.now()).toISOString(),expiresAt:new Date(Math.min(this.now()+600000,Date.parse(screen.expiresAt))).toISOString(),count:0,maxActions:this.cap,actions:[],screenId:screen.id};
     this.state.grants[thread]=g;this.save();this.arm(thread,g);this.audit(g,null,'on');
     try{await this.hub.request(machine,'input_start',{grantId:g.id,expiresAt:g.expiresAt,maxActions:g.maxActions,mode:g.mode});if(this.grant(thread).id!==g.id)throw new Error('Control grant changed during consent');}
     catch{await this.off(thread,'portal consent failed');throw new Error('Control consent failed or session ended, Ozzy. Check the machine’s GNOME dialog and node logs.');}
@@ -122,7 +122,7 @@ export class ControlGrants {
         if(action.action!=='screenshot'&&receipt.frame!==frame)throw new Error('Screen changed after approval; stop and inspect.');
         let skipped=false;
         if(action.action!=='screenshot'){
-          const started=await this.hub.request(g.machine,'input_start',{grantId:g.id,expiresAt:g.expiresAt,maxActions:g.maxActions});
+          const started=await this.hub.request(g.machine,'input_start',{grantId:g.id,expiresAt:g.expiresAt,maxActions:g.maxActions,mode:g.mode||'step'});
           skipped=started.newSession===true;delete g.runtimeClosedAt;this.save();
           if(!skipped){g.count++;g.pendingAction=action.action;this.save();dispatched=true;const acknowledged=await this.hub.request(g.machine,'input_action',{grantId:g.id,...action,expectedFocus:receipt.focus?.focused,approvedApp:receipt.approvedApp});delivery=acknowledged?.delivery;g.lastDelivery=delivery;g.actions.push(action.action);delete g.pendingAction;this.save();}
         }

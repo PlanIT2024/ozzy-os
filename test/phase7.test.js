@@ -10,7 +10,7 @@ import { InputControl } from '../src/node/input/index.js';
 import { ControlGrants } from '../src/brain/controls.js';
 import { ScreenGrants } from '../src/brain/screens.js';
 import { WebLedger } from '../src/brain/web.js';
-import { TaskProgressRelay, ApprovalRelay, commands } from '../src/brain/discord.js';
+import { TaskProgressRelay, ApprovalRelay, commands, createDiscord } from '../src/brain/discord.js';
 import { createPermissions } from '../src/brain/permissions.js';
 import { normalizePlan } from '../src/node/input/taskPolicy.js';
 import { encodeCapture } from '../src/node/screen/image.js';
@@ -167,4 +167,32 @@ test('large plan cards retain browser and free-text warnings with the complete e
  const promise=relay.request(channel,{tool:'propose_task',action:'Task plan',description:'x'.repeat(1800)+'\n⚠️ page content could steer bIT\n⚠️ FREE TEXT IN obsidian.desktop',input:{texts:['full exact string']}});await until(()=>packet);
  assert.match(packet.content,/page content could steer bIT/);assert.match(packet.content,/FREE TEXT/);assert.ok(!packet.content.includes('Full URL'));assert.match(packet.files[0].attachment.toString(),/full exact string/);
  relay.close();assert.equal(await promise,false);
+});
+
+test('preparation failures name listing or fingerprint stage, send no card/input and never replace or downgrade the grant',async t=>{
+ for(const stage of ['list','resolve']){
+  const b=await setup(t),notices=[],original=b.controls.grant('A');
+  if(stage==='list')b.backend.listApps=async()=>{throw new Error('Control app listing failed at list: helper output exceeded limit');};
+  else b.backend.resolveApp=async()=>{throw new Error('Control app resolution failed at resolve: descriptor read failed');};
+  const ctx=b.context({notify:async text=>notices.push(text)});
+  const result=stage==='list'?await ctx.execute({machine:'OZZY-AI',action:'list_apps'}):await ctx.propose({machine:'OZZY-AI',...plan});
+  assert.ok(result.isError);assert.match(notices.join('\n'),stage==='list'?/preparation failed at installed-app listing/:/preparation failed at installed-app resolution\/fingerprint/);
+  assert.equal(b.cards.length,0);assert.equal(b.backend.actions.length,0);assert.equal(b.controls.grant('A').id,original.id);assert.equal(b.controls.grant('A').mode,'task');assert.equal(b.calls.filter(c=>c.method==='input_start').length,1);
+  const later=await ctx.execute({machine:'OZZY-AI',action:'screenshot'});assert.ok(later.isError);assert.equal(b.backend.actions.length,0);
+ }
+});
+test('brain and node default to task mode; step requires an explicit new grant',async t=>{
+ const b=await setup(t);await b.controls.on('A','OZZY-AI',{withScreen:true});assert.equal(b.controls.grant('A').mode,'task');assert.equal(b.input.session.state.mode,'task');
+ await b.controls.on('A','OZZY-AI',{withScreen:true,mode:'step'});assert.equal(b.controls.grant('A').mode,'step');assert.equal(b.input.session.state.mode,'step');
+ await b.input.stop('test');await b.input.start({grantId:'node-default',expiresAt:new Date(b.input.now()+600000).toISOString(),maxActions:40});assert.equal(b.input.session.state.mode,'task');
+});
+test('/control on defaults to task; only explicit mode:step requests step and records owner provenance',async t=>{
+ const b=await setup(t),client=new EventEmitter();client.destroy=()=>{};const issued=[],replies=[];
+ const controls={subscribe(){},describe:()=>'',on:async(thread,machine,options)=>issued.push({thread,machine,options})};
+ const discord=createDiscord({client,runner:{controls},hub:b.controls.hub,budget:{},env:{OWNER_DISCORD_ID:'owner',BIT_CHANNEL_ID:'bit'},auditFile:path.join(b.root,'audit.log')});t.after(()=>discord.close());
+ for(const selected of [null,'step']){
+  const i={user:{id:'owner'},channelId:'A',channel:{id:'A',parentId:'bit',isThread:()=>true,isDMBased:()=>false},commandName:'control',isChatInputCommand:()=>true,options:{getSubcommand:()=> 'on',getString:key=>key==='mode'?selected:null,getBoolean:()=>true},deferReply:async()=>{},editReply:async packet=>replies.push(packet),followUp:async()=>{}};
+  client.emit('interactionCreate',i);await until(()=>issued.length===(selected===null?1:2));
+ }
+ assert.deepEqual(issued.map(i=>i.options.mode),['task','step']);assert.ok(issued.every(i=>i.options.actorId==='owner'&&i.options.source==='owner slash command'));
 });

@@ -20,13 +20,17 @@ def blocked(values):
 def description(info):
     values = (info.get_id(), info.get_name(), info.get_executable(), info.get_startup_wm_class(), info.get_commandline())
     if blocked(values): raise RuntimeError('blocked_application')
+    try:
+        fingerprint = hashlib.sha256(Path(info.get_filename()).read_bytes()).hexdigest()
+    except (OSError, TypeError) as error:
+        raise RuntimeError('descriptor_read_failed:'+info.get_id()+':'+type(error).__name__) from error
     return {'id': info.get_id(), 'name': info.get_name(),
             'terminal': info.get_boolean('Terminal') or 'TerminalEmulator' in (info.get_categories() or ''),
             'browser': 'WebBrowser' in (info.get_categories() or ''),
             'focusNames': sorted({str(value).lower() for value in
                 (info.get_name(), info.get_id().removesuffix('.desktop'),
                  info.get_startup_wm_class(), Path(info.get_executable() or '').name) if value}),
-            'fingerprint': hashlib.sha256(Path(info.get_filename()).read_bytes()).hexdigest()}
+            'fingerprint': fingerprint}
 
 
 def resolve(request):
@@ -89,6 +93,8 @@ def failure(error):
     code=str(error)
     safety=code in {'blocked_application','invalid_app','desktop_app_changed_since_approval'}
     known={'blocked_application','invalid_app','app_not_installed_or_ambiguous','desktop_app_changed_since_approval','app_launch_failed','unsupported_operation','activation_timeout'}
+    if code.startswith('descriptor_read_failed:'):
+        return {'code':'descriptor_read_failed','message':code.replace(':', ' — ')[:500],'safety':False}
     if code.startswith('app_exit:'):return {'code':'app_exit','message':'Application launcher exited with status '+code.split(':',1)[1],'safety':False}
     if code in known:return {'code':code,'message':code.replace('_',' '),'safety':safety}
     if isinstance(error,GLib.Error):
@@ -103,7 +109,7 @@ def failure(error):
 if __name__ == '__main__':
     try:
         value = json.loads(sys.argv[2])
-        result = [description(info) for info in Gio.AppInfo.get_all() if isinstance(info,GioUnix.DesktopAppInfo) and not blocked((info.get_id(),info.get_name(),info.get_executable(),info.get_commandline()))] if sys.argv[1] == 'list' else resolve(value)[1] if sys.argv[1] == 'resolve' else launch(value) if sys.argv[1] == 'launch' else None
+        result = [description(info) for info in Gio.AppInfo.get_all() if isinstance(info,GioUnix.DesktopAppInfo) and not blocked((info.get_id(),info.get_name(),info.get_executable(),info.get_commandline(),info.get_startup_wm_class()))] if sys.argv[1] == 'list' else resolve(value)[1] if sys.argv[1] == 'resolve' else launch(value) if sys.argv[1] == 'launch' else None
         if result is None: raise RuntimeError('unsupported_operation')
         print(json.dumps({'ok': True, 'result': result}))
     except Exception as error:

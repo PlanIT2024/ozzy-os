@@ -28,7 +28,7 @@ export class ControlTasks {
     await this.controls.hub.request(t.machine,'input_task_finish',{grantId:t.grantId,taskId:t.id}).catch(()=>{});
     await t.ui?.finish(this.summary(t));
   }
-  context({thread,scheduled=false,tainted=()=>false,taintTask=()=>null,markBrowser=()=>{},approve=async()=>false,startProgress,onCapture=()=>{},screen,attachmentRequested=false,publish}){
+  context({thread,scheduled=false,tainted=()=>false,taintTask=()=>null,markBrowser=()=>{},approve=async()=>false,startProgress,notify=async()=>{},onCapture=()=>{},screen,attachmentRequested=false,publish}){
     const manager=this,controls=this.controls,generation=controls.active(thread)?.id,receipts=new Map();let task=null,stopped=false,published=false;
     const gate=machine=>{
       if(task&&!task.ready)throw new Error('Control task Stop UI not ready; wait for propose_task to finish');
@@ -37,12 +37,22 @@ export class ControlTasks {
       const g=controls.grant(thread),s=controls.screens.grant(thread),n=controls.hub.list().find(n=>canonical(n.machine)===canonical(machine));
       if(g.id!==generation||g.mode!=='task'||s.id!==g.screenId||canonical(machine)!==g.machine||!n?.online||!n.capabilities?.includes('input'))throw new Error('Control task grant, screen or machine changed');return g;
     };
+    const preparationFailure=async(stage,error)=>{
+      stopped=true;
+      const message=`Task preparation failed at ${stage}: ${error.message}. No plan approved; no input sent. The current grant stays in its original mode. Ask Ozzy; do not switch modes or reissue a grant.`;
+      if(!error.notified){error.notified=true;await Promise.resolve(notify(message)).catch(()=>{});}
+      error.message=message;return error;
+    };
     const authorize=async(raw,{signal}={})=>{
       const g=gate(raw.machine);
       if(raw.action==='list_apps')return;
       if(raw.action==='propose_task'){
         if(task)throw new Error('Control task already planned; finish and ask for a new owner instruction');
-        const plan=normalizePlan(raw);if(receipts.has(JSON.stringify(plan)))return;const prepared=await controls.hub.request(g.machine,'input_task_prepare',{grantId:g.id,...plan}),approvalId=randomUUID();
+        let plan,prepared;
+        try{plan=normalizePlan(raw);}catch(error){throw await preparationFailure('plan validation',error);}
+        if(receipts.has(JSON.stringify(plan)))return;
+        try{prepared=await controls.hub.request(g.machine,'input_task_prepare',{grantId:g.id,...plan});}catch(error){throw await preparationFailure('installed-app resolution/fingerprint',error);}
+        const approvalId=randomUUID();
         const description=[`Goal: ${plan.goal}`,`Apps: ${prepared.apps.map(app=>`${app.name} (${app.id})`).join(', ')}`,...(prepared.browser?['⚠️ page content could steer bIT — including this browser taints the thread']:[]),...plan.free_text_apps.map(id=>`⚠️ FREE TEXT IN ${id}: arbitrary text may be typed (never terminals)`),`Exact typed texts:\n${plan.texts.map((text,i)=>`${i+1}. ${JSON.stringify(text)}`).join('\n')||'(none)'}`,`Actions: ${plan.allowed_actions.join(', ')}`,`Additional keys: ${plan.key_combos.join(', ')||'none'}`,`Limits: ${plan.max_steps} steps · ${plan.max_minutes} minutes (within existing grant). Terminals, sending, dangerous keys and sensitive/dialog screens require step mode.`].join('\n');
         if(!await approve({tool:'propose_task',action:'Task plan',description,input:{machine:g.machine,...plan,browser:prepared.browser},approvalId,signal}))throw new Error('Control task plan denied; no actions ran');
         gate(raw.machine);if(signal?.aborted)throw new Error('Control task approval cancelled');receipts.set(JSON.stringify(plan),{prepared,approvalId});return;
@@ -69,7 +79,10 @@ export class ControlTasks {
     const execute=async raw=>{
       try{
         const g=gate(raw.machine);await authorize(raw);
-        if(raw.action==='list_apps')return {content:[{type:'text',text:JSON.stringify(await controls.hub.request(g.machine,'input_list_apps',{grantId:g.id}))}]};
+        if(raw.action==='list_apps'){
+          try{return {content:[{type:'text',text:JSON.stringify(await controls.hub.request(g.machine,'input_list_apps',{grantId:g.id}))}]};}
+          catch(error){throw await preparationFailure('installed-app listing',error);}
+        }
         if(raw.action==='finish_task'){stopped=true;await manager.finishFor(thread);return {content:[{type:'text',text:'Task finished; held input released. A new approved plan is required for more actions.'}]};}
         const result=await controls.hub.request(g.machine,'input_task_action',{grantId:g.id,taskId:task.id,...raw});
         if(task.closed&&task.reason!=='task step cap reached')throw new Error('Control task stopped; verification image discarded');
