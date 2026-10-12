@@ -1,3 +1,4 @@
+import { noSync } from '../bitos/sync.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -19,9 +20,9 @@ export function requestedScreenAttachment(prompt) {
   });
 }
 export class ScreenGrants {
-  constructor({ root = ROOT, now = () => new Date(), timezone = process.env.TZ || 'America/New_York', cap = Number(process.env.BIT_DAILY_SCREEN_CAP ?? 40) } = {}) {
+  constructor({ sync = noSync, root = ROOT, now = () => new Date(), timezone = process.env.TZ || 'America/New_York', cap = Number(process.env.BIT_DAILY_SCREEN_CAP ?? 40) } = {}) {
     if (!Number.isInteger(cap) || cap < 0) throw new Error('Invalid screen cap');
-    Object.assign(this, { root, now, timezone, cap }); this.file = path.join(root, 'data/screens.json');
+    Object.assign(this, { sync, root, now, timezone, cap }); this.file = path.join(root, 'data/screens.json');
     this.state = readJSON(this.file, { grants: {}, days: {} });
     this.auditFile = path.join(root, 'data/audit.log');
   }
@@ -37,10 +38,14 @@ export class ScreenGrants {
   on(thread, machine) {
     machine = canonical(machine);
     const grant = { id: randomUUID(), machine, issuedAt: this.now().toISOString(), expiresAt: new Date(+this.now() + GRANT_MS).toISOString() };
-    this.state.grants[thread] = grant; this.save(); this.audit({ event: 'screen_grant', machine, decision: 'on', grantId: grant.id }); return grant;
+    const previous = this.state.grants[thread];
+    if (previous && !previous.revokedAt) this.sync.leaseEnded({ id: previous.id, reason: 'replaced' });
+    this.state.grants[thread] = grant; this.save(); this.audit({ event: 'screen_grant', machine, decision: 'on', grantId: grant.id });
+    this.sync.leaseStarted({ ...grant, thread, level: 'watch' }); return grant;
   }
   off(thread) {
     const grant = this.state.grants[thread]; if (!grant) return;
+    this.sync.leaseEnded({ id: grant.id, reason: 'user', revokedAt: this.now().toISOString() });
     grant.revokedAt = this.now().toISOString(); this.save(); this.audit({ event: 'screen_grant', machine: grant.machine, decision: 'off', grantId: grant.id });
   }
   grant(thread) {
@@ -97,6 +102,7 @@ export class ScreenGrants {
             await authorize(machine); receipt = receipts.get(details.machine).shift();
           }
           gate(machine); this.reserve();
+          this.sync.event({ thread, machine: details.machine, kind: 'screenshot', summary: 'Screenshot requested', leaseId: receipt.grant.id });
           const result = await hub.request(details.machine, 'screen');
           const current = gate(machine);
           if (current.grant.id !== receipt.grant.id) throw new Error('Screen grant changed while capturing; image discarded.');

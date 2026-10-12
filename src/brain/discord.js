@@ -1,3 +1,4 @@
+import { noSync } from '../bitos/sync.js';
 import { retryNetwork, temporary } from '../networkRetry.js';
 import { zonedTime } from './scheduler.js';
 import fs from 'node:fs';
@@ -46,7 +47,7 @@ export function commands() {
   ].map(c => c.toJSON());
 }
 export class ApprovalRelay {
-  constructor(owner, { timeout = 600000 } = {}) { this.owner = owner; this.timeout = timeout; this.pending = new Map(); }
+  constructor(owner, { timeout = 600000, sync = noSync } = {}) { this.sync = sync; this.owner = owner; this.timeout = timeout; this.pending = new Map(); }
   async request(channel, { tool, file, url, action, description, input, diff, signal, approvalId, preview }) {
     if (signal?.aborted) return false;
     const id = approvalId || randomUUID();
@@ -59,10 +60,13 @@ export class ApprovalRelay {
     const label = target?.length > 1700 ? 'Full URL in proposed-operation.json (including query string)' : target;
     const diffPreview = diff && diff.length <= 1400 && !diff.includes('```') ? `\n\`\`\`diff\n${diff}\n\`\`\`` : '';
     const message = await channel.send({ flags: MessageFlags.SuppressEmbeds, content: `This needs your say-so, Ozzy: ${action ? label : `${tool} ${label}`}\nExpires in 10 minutes.${diffPreview}`, files: [{ attachment: Buffer.from(review), name: diff ? 'proposed-change.diff' : 'proposed-operation.json' }, ...(preview ? [{ attachment: preview, name: 'target-preview.png' }] : [])], components: [row], allowedMentions: { parse: [] } });
+    const mirror = { id, thread: channel.id, machine: input?.machine, summary: `${tool || action || 'Action'} requires owner approval`, detail: { tool, action: input?.action, text_length: typeof input?.text === 'string' ? input.text.length : undefined }, expires_at: new Date(Date.now() + this.timeout).toISOString() };
+    this.sync.approvalRequested(mirror);
     return new Promise(resolve => {
       let done = false;
       const finish = async (allowed, reason) => {
         if (done) return; done = true; clearTimeout(timer); signal?.removeEventListener('abort', cancel); this.pending.delete(id);
+        this.sync.approvalDecided({ ...mirror, status: allowed ? 'approved' : reason === 'approval timed out' ? 'expired' : 'denied', reason });
         try { await message.edit({ content: `${allowed ? '✅ Approved' : '❌ Denied'}: ${label} (${reason})`, components: [], allowedMentions: { parse: [] } }); } catch { /* decision still resolves if Discord loses the message */ }
         resolve(allowed);
       };
@@ -102,9 +106,9 @@ export async function machinesText(hub, onError = () => {}) {
     catch (e) { onError(e, { machine: machine.machine }); return `${machine.machine} 🟡 my status sensor hit a snag. Try again in a moment, Ozzy.`; }
   }))).join('\n');
 }
-export function createDiscord({ runner, hub, budget, scheduler, reminders, env = process.env, auditFile = path.join(ROOT, 'data/audit.log'), client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.DirectMessages], partials: [Partials.Channel] }) }) {
+export function createDiscord({ sync = noSync, runner, hub, budget, scheduler, reminders, env = process.env, auditFile = path.join(ROOT, 'data/audit.log'), client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.DirectMessages], partials: [Partials.Channel] }) }) {
   const owner = env.OWNER_DISCORD_ID, bitChannel = env.BIT_CHANNEL_ID;
-  const approvals = new ApprovalRelay(owner);
+  const approvals = new ApprovalRelay(owner, { sync });
   if (runner.controls) runner.controls.notifyThread = async (thread, text) => sendText(await client.channels.fetch(thread), text);
   const fail = (error, context = {}) => {
     console.error('Discord operation failed:', context, error);

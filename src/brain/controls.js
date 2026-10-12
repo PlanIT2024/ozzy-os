@@ -1,3 +1,4 @@
+import { noSync } from '../bitos/sync.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -9,9 +10,9 @@ import { deliveryPlan, deliveryText, validDelivery } from '../node/input/deliver
 import { assertSafeFocus, terminalFocus, focusedAppMatches } from '../node/input/focus.js';
 import sharp from '../node/screen/sharp.js';
 export class ControlGrants {
-  constructor({root=ROOT,hub,screens,now=()=>Date.now(),cap=Number(process.env.BIT_CONTROL_MAX_ACTIONS??40)}={}){
+  constructor({sync=noSync,root=ROOT,hub,screens,now=()=>Date.now(),cap=Number(process.env.BIT_CONTROL_MAX_ACTIONS??40)}={}){
     if(!Number.isInteger(cap)||cap<1||cap>1000)throw new Error('Invalid control cap');
-    Object.assign(this,{root,hub,screens,now,cap});this.file=path.join(root,'data/controls.json');this.state=readJSON(this.file,{grants:{},previews:{}});this.listeners=new Map();this.timers=new Map();this.warningTimers=new Map();
+    Object.assign(this,{sync,root,hub,screens,now,cap});this.file=path.join(root,'data/controls.json');this.state=readJSON(this.file,{grants:{},previews:{}});this.listeners=new Map();this.timers=new Map();this.warningTimers=new Map();
     hub?.on?.('control_closed',({machine,grantId,reason,delivery})=>{
       for(const [thread,g]of Object.entries(this.state.grants))if(!g.revokedAt&&canonical(machine)===g.machine&&(!grantId||grantId===g.id)){
         if(['runtime suspended','disconnect'].includes(reason)){g.runtimeClosedAt=new Date(this.now()).toISOString();try{this.save();this.audit(g,null,'suspended');}catch{console.warn('Control suspension persistence unavailable');}}
@@ -45,12 +46,14 @@ export class ControlGrants {
     for(const [other,g]of Object.entries(this.state.grants))if(!g.revokedAt&&(g.machine===machine||other===thread))await this.off(other,'replaced');
     const g={id:randomUUID(),machine,issuedAt:new Date(this.now()).toISOString(),expiresAt:new Date(Math.min(this.now()+600000,Date.parse(screen.expiresAt))).toISOString(),count:0,maxActions:this.cap,actions:[],screenId:screen.id};
     this.state.grants[thread]=g;this.save();this.arm(thread,g);this.audit(g,null,'on');
+    this.sync.leaseStarted({...g,thread,level:'control'});
     try{await this.hub.request(machine,'input_start',{grantId:g.id,expiresAt:g.expiresAt,maxActions:g.maxActions});if(this.grant(thread).id!==g.id)throw new Error('Control grant changed during consent');}
     catch{await this.off(thread,'portal consent failed');throw new Error('Control consent failed or session ended, Ozzy. Check the machine’s GNOME dialog and node logs.');}
     return g;
   }
   async off(thread,reason='owner off',send=true,expectedId){
     const g=this.state.grants[thread];if(!g||g.revokedAt||(expectedId&&g.id!==expectedId))return;
+    this.sync.leaseEnded({id:g.id,reason,revokedAt:new Date(this.now()).toISOString()});
     g.revokedAt=new Date(this.now()).toISOString();g.reason=reason;clearTimeout(this.timers.get(thread));clearTimeout(this.warningTimers.get(thread));try{this.save();this.audit(g,null,'off');}catch{console.warn('Control revocation persistence failed; stopping node anyway');}
     if(send)await this.hub.request(g.machine,'input_stop',{grantId:g.id}).catch(()=>{});
     const notify=this.listeners.get(thread)|| (this.notifyThread ? text=>this.notifyThread(thread,text) : ()=>{});
@@ -118,7 +121,7 @@ export class ControlGrants {
         if(action.action!=='screenshot'){
           const started=await this.hub.request(g.machine,'input_start',{grantId:g.id,expiresAt:g.expiresAt,maxActions:g.maxActions});
           skipped=started.newSession===true;delete g.runtimeClosedAt;this.save();
-          if(!skipped){g.count++;g.pendingAction=action.action;this.save();dispatched=true;const acknowledged=await this.hub.request(g.machine,'input_action',{grantId:g.id,...action,expectedFocus:receipt.focus?.focused,approvedApp:receipt.approvedApp});delivery=acknowledged?.delivery;g.lastDelivery=delivery;g.actions.push(action.action);delete g.pendingAction;this.save();}
+          if(!skipped){g.count++;g.pendingAction=action.action;this.save();dispatched=true;this.sync.event({thread,machine:g.machine,kind:'input',summary:`Computer ${action.action}`,leaseId:g.id,payload:{action:action.action,text_length:typeof action.text==='string'?action.text.length:undefined}});const acknowledged=await this.hub.request(g.machine,'input_action',{grantId:g.id,...action,expectedFocus:receipt.focus?.focused,approvedApp:receipt.approvedApp});delivery=acknowledged?.delivery;g.lastDelivery=delivery;g.actions.push(action.action);delete g.pendingAction;this.save();}
         }
         if(action.action==='screenshot'){g.count++;this.save();}
         const result=await screen.capture(g.machine);

@@ -8,6 +8,7 @@ StartLimitIntervalSec=0
 Type=simple
 WorkingDirectory=%h/ozzy-os
 EnvironmentFile=%h/ozzy-os/.env
+EnvironmentFile=-%h/ozzy-os/.env.brain
 ExecStart=/usr/bin/node %h/ozzy-os/src/brain/index.js
 Restart=on-failure
 RestartSec=5

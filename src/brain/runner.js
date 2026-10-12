@@ -1,3 +1,4 @@
+import { noSync } from '../bitos/sync.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
@@ -54,11 +55,11 @@ export function skillOptions(root = ROOT) {
   };
 }
 export class Runner {
-  constructor({ hub, budget, root = ROOT, queryFn = query, growth, reminders, screens, controls }) {
-    Object.assign(this, { hub, budget, root, queryFn, growth });
+  constructor({ sync = noSync, hub, budget, root = ROOT, queryFn = query, growth, reminders, screens, controls }) {
+    Object.assign(this, { sync, hub, budget, root, queryFn, growth });
     this.reminders = reminders || new Reminders({ root });
-    this.screens = screens || new ScreenGrants({ root });
-    this.controls = controls || new ControlGrants({ root, hub, screens: this.screens });
+    this.screens = screens || new ScreenGrants({ root, sync });
+    this.controls = controls || new ControlGrants({ root, hub, sync, screens: this.screens });
     this.transcript = new Transcript(root);
     this.sessionFile = path.join(root, 'data/sessions.json');
     this.sessions = readJSON(this.sessionFile, {});
@@ -76,11 +77,15 @@ export class Runner {
   reset(channel) { void this.controls.off(channel, 'reset'); this.screens.off(channel); return this.queue(() => { this.transcript.reset(channel); delete this.sessions[channel]; delete this.webKeys[channel]; saveJSON(this.webKeysFile, this.webKeys); saveJSON(this.sessionFile, this.sessions); }); }
   close() { this.stopped = true; for (const controller of this.controllers) controller.abort(); return this.controls.close(); }
   run(channel, prompt, { notify, approve, fresh = false, webAllowed = true, scheduled = false, publish } = {}) {
+    let denied = false;
+    const ownerApprove = approve;
+    if (approve) approve = async request => { const allowed = await ownerApprove(request); if (!allowed) denied = true; return allowed; };
     return this.queue(async () => {
       if (this.stopped) return 'My ring is powering down. Catch me after restart.';
       const balance = this.budget.status();
       if (balance.uncertain) return 'My juice meter lost track of the last run. Ozzy, please reconcile data/budget.json before I spend any more.';
       if (balance.remaining <= 0) return 'My neon ring is running on fumes, Ozzy. I’m out of juice until next month. Machines and mood controls still work.';
+      this.sync.taskUpsert({ thread: channel, status: 'started', machine: this.controls.active(channel)?.machine || this.screens.active(channel)?.machine });
       const isolatedSkills = skillOptions(this.root);
       if (fresh) {
         await this.controls.off(channel, 'fresh session');
@@ -97,7 +102,7 @@ export class Runner {
       const screenRun = !scheduled && Boolean(this.screens.active(channel));
       const screen = screenRun ? this.screens.context({ hub: this.hub, thread: channel, scheduled, tainted: () => this.web.session(sessionKey).tainted, approve, notify, publish, onCapture: metadata => captures.push({ machine: metadata.machine, capturedAt: metadata.capturedAt }), attachmentRequested: requestedScreenAttachment(prompt) }) : null;
       const control = !scheduled && !this.web.session(sessionKey).tainted && screen && this.controls.active(channel) ? this.controls.context({ thread: channel, scheduled, tainted: () => this.web.session(sessionKey).tainted, approve, notify, screen }) : null;
-      const permissions = createPermissions({ control, screen, web: this.web, sessionKey, reminders: this.reminders, webAllowed, root: this.root, notify, approve, afterWrite: file => this.growth?.written(file), context: channel });
+      const permissions = createPermissions({ sync: this.sync, control, screen, web: this.web, sessionKey, reminders: this.reminders, webAllowed, root: this.root, notify, approve, afterWrite: file => this.growth?.written(file), context: channel });
       const mood = activeMood(this.preferences.mood);
       const persona = fs.readFileSync(path.join(this.root, 'bit/persona/persona.md'), 'utf8');
       const availableScreens = (this.hub.list?.() || []).filter(machine => machine.online && machine.capabilities?.includes('screen')).map(machine => machine.machine);
@@ -113,6 +118,9 @@ export class Runner {
       if (screenRun) env.CLAUDE_CODE_SKIP_PROMPT_HISTORY = '1';
       let gotResult = false, response = '', session = screenRun ? undefined : this.sessions[channel];
       this.budget.begin();
+      const modelEventId = randomUUID();
+      const model = process.env.BIT_MODEL || 'claude-sonnet-5';
+      const modelCalls = new Set();
       try {
         async function* input() { yield { type: 'user', message: { role: 'user', content: `${priorContext}${scheduled ? "Approved scheduled job instructions" : "Ozzy says"}:\n${prompt}` }, parent_tool_use_id: null, session_id: session || '' }; }
         for await (const message of this.queryFn({ prompt: input(), options: {
@@ -124,10 +132,17 @@ export class Runner {
           ...(session ? { resume: session } : {}), maxBudgetUsd: balance.remaining, maxTurns: 30,
           env, abortController: controller,
         } })) {
+          if (message.type === 'assistant' && message.message?.id && !modelCalls.has(message.message.id)) {
+            modelCalls.add(message.message.id);
+            this.sync.event({ thread: channel, kind: 'model_call', summary: 'Model response', model: message.message.model || model,
+              payload: { input_tokens: message.message.usage?.input_tokens, output_tokens: message.message.usage?.output_tokens } });
+          }
           if (message.session_id) { session = message.session_id; if (!screenRun) { this.sessions[channel] = session; saveJSON(this.sessionFile, this.sessions); } }
           if (message.type === 'result') {
             this.web.reportedCost(session, message.modelUsage);
             this.budget.record(session, message.total_cost_usd); gotResult = true;
+            this.sync.event({ id: modelEventId, thread: channel, kind: modelCalls.size ? 'note' : 'model_call', summary: 'Model run completed (total cost)', model, cost_cents: Number.isFinite(message.total_cost_usd) ? message.total_cost_usd * 100 : 0 });
+            this.sync.taskUpsert({ thread: channel, status: message.subtype === 'success' && !denied && !controller.signal.aborted ? 'finished' : 'failed', reason: message.subtype === 'success' ? denied ? 'Owner declined an action' : controller.signal.aborted ? 'Run aborted' : undefined : `Model result: ${message.subtype}` });
             response = message.subtype === 'success' ? message.result : `My ring hit a snag (${message.subtype}). ${message.errors?.join('; ') || 'Please try a smaller request.'}`;
           }
         }
@@ -139,9 +154,14 @@ export class Runner {
         return response;
       } catch (error) {
         console.error('Agent run stopped:', error.name, screenRun ? 'Screenshot run details omitted to protect image data' : String(error.message).replaceAll(process.env.ANTHROPIC_API_KEY || '\0', '[redacted]'));
+        this.sync.taskUpsert({ thread: channel, status: 'failed', reason: error.name });
+        this.sync.event({ id: modelEventId, thread: channel, kind: modelCalls.size ? 'note' : 'model_call', summary: 'Model run failed', model, payload: { reason: error.name } });
         permissions.audit({ event: 'runner_error', decision: 'stopped', reason: error.name });
         return 'My ring hit a connection snag. Check the brain console and budget ledger before retrying; I won’t claim that task succeeded.';
       } finally { this.controllers.delete(controller); }
+    }).catch(error => {
+      this.sync.taskUpsert({ thread: channel, status: 'failed', reason: error.name });
+      throw error;
     });
   }
 }

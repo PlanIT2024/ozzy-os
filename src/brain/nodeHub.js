@@ -1,3 +1,4 @@
+import { noSync } from '../bitos/sync.js';
 import { validDelivery } from '../node/input/delivery.js';
 import path from 'node:path';
 import { WebSocketServer } from 'ws';
@@ -20,9 +21,9 @@ export function validCapabilities(values) {
   return Array.isArray(values) && values.length >= 1 && values.length <= 3 && values[0] === 'status' && (values.length === 1 || values[1] === 'screen') && (values.length < 3 || values[2] === 'input');
 }
 export class NodeHub extends EventEmitter {
-  constructor({ port = Number(process.env.NODE_HUB_PORT || 8787), host = process.env.NODE_HUB_BIND || '127.0.0.1', tokens = parseTokens(process.env.NODE_TOKENS), key = loadKey(process.env.BRAIN_KEY_FILE || path.join(ROOT, 'data/keys/brain.json')), trustedKeys = nodeKeys(process.env.NODE_KEYS), relayURL = process.env.RELAY_URL, relayToken = process.env.BRAIN_RELAY_TOKEN || process.env.RELAY_TOKEN, timeout = 10000, stale = 90000, log = console.log } = {}) {
+  constructor({ sync = noSync, port = Number(process.env.NODE_HUB_PORT || 8787), host = process.env.NODE_HUB_BIND || '127.0.0.1', tokens = parseTokens(process.env.NODE_TOKENS), key = loadKey(process.env.BRAIN_KEY_FILE || path.join(ROOT, 'data/keys/brain.json')), trustedKeys = nodeKeys(process.env.NODE_KEYS), relayURL = process.env.RELAY_URL, relayToken = process.env.BRAIN_RELAY_TOKEN || process.env.RELAY_TOKEN, timeout = 10000, stale = 90000, log = console.log } = {}) {
     super(); if (!['127.0.0.1', '::1', 'localhost'].includes(host)) throw new Error('Brain hub must bind to loopback only');
-    Object.assign(this, { key, trustedKeys, timeout, stale, log }); this.pending = new Map(); this.handshakes = new Map();
+    Object.assign(this, { sync, key, trustedKeys, timeout, stale, log }); this.pending = new Map(); this.handshakes = new Map();
     this.failure = new Promise((_, reject) => { this.rejectFailure = reject; }); void this.failure.catch(() => {});
     this.nodes = new Map([...trustedKeys].map(([id, value]) => [id, { machine: value.name, online: false, lastSeen: null }]));
     this.server = new WebSocketServer({ port, host, maxPayload: MAX_MESSAGE, perMessageDeflate: false });
@@ -100,9 +101,11 @@ export class NodeHub extends EventEmitter {
       if (p && p.peer === peer) { this.pending.delete(m.id); clearTimeout(p.timer); if (m.ok === true) p.resolve(m.result); else p.reject(Object.assign(new Error(String(m.error || 'Node request failed')),{delivery:validDelivery(m.delivery)?m.delivery:undefined,launchFailure:m.launchFailure===true})); }
     } else if (m.type !== 'heartbeat') throw new Error('Invalid application message');
     n.lastSeen = Date.now();
+    this.sync.nodeSeen({ ...n, identity: id, connected: m.type === 'hello', capabilitiesChanged: m.type === 'capabilities' });
   }
   disconnect(id, connection) {
     const n = this.nodes.get(id); if (!n || n.connection !== connection) return;
+    if (n.online) this.sync.nodeGone(id);
     n.online = false; n.peer?.close();
     for (const [request, p] of this.pending) if (p.peer === n.peer) { clearTimeout(p.timer); p.reject(new Error('Machine disconnected')); this.pending.delete(request); }
     n.peer = null;
