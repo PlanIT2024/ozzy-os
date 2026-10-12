@@ -79,3 +79,40 @@ test('retry delay reaches five-minute cap and new writes persist during a hung r
   assert.ok((await fs.readFile(outbox.file, 'utf8')).includes('second'));
   outbox.close(); finish(); await flushing;
 });
+
+test('poisoned entries do not block other rows, preserve entity order and dead-letter once after 20 failures', async t => {
+  let time = 0; const logs = [], successes = [], secret = 'fake-service-role-sensitive-value';
+  const { outbox, scheduled, directory } = await box(t, { now: () => time, env: { SUPABASE_SERVICE_ROLE_KEY: secret }, log: message => logs.push(message),
+    write: async entry => {
+      if (entry.payload.status === 'poison') throw Object.assign(new Error(`Invalid UUID ${secret}`), { code: '22P02', hint: `Use a valid UUID; ${secret}` });
+      successes.push(entry.payload.id);
+    },
+  });
+  outbox.enqueue('tasks', { id: 'poison', status: 'poison' });
+  outbox.enqueue('tasks', { id: 'poison', status: 'done' });
+  outbox.enqueue('nodes', { id: 'healthy' });
+  await outbox.flush(); assert.deepEqual(successes, ['healthy']);
+  const first = outbox.entries[0]; assert.equal(first.attempts, 1); assert.equal(first.last_error.code, '22P02');
+  assert.match(logs[0], /22P02/); assert.match(logs[0], /Invalid UUID/); assert.match(logs[0], /Use a valid UUID/);
+  assert.match(logs[0], /"table":"tasks"/); assert.match(logs[0], /"operation":"upsert"/);
+  assert.ok(!logs.join('\n').includes(secret));
+  outbox.enqueue('nodes', { id: 'new-healthy' });
+  assert.equal(scheduled.at(-1).delay, 0, 'new rows preempt a backoff timer');
+  await outbox.flush(); assert.deepEqual(successes, ['healthy', 'new-healthy']);
+  let stale;
+  while (first.attempts < 20) {
+    if (first.attempts === 19) stale = JSON.stringify(first);
+    time = first.next; await outbox.flush();
+  }
+  assert.equal(outbox.entries.length, 0); assert.deepEqual(successes, ['healthy', 'new-healthy', 'poison']);
+  const dead = (await fs.readFile(outbox.deadFile, 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(dead.length, 1); assert.equal(dead[0].attempts, 20); assert.equal(dead[0].last_error.code, '22P02');
+  assert.ok(!JSON.stringify(dead).includes(secret));
+  assert.equal((await fs.stat(outbox.deadFile)).mode & 0o777, 0o600);
+  await outbox.flush(); assert.equal(logs.filter(l => /dead-lettered/.test(l)).length, 1);
+  // Simulate a crash between journal append and live-file removal.
+  outbox.close(); await outbox.storage; await fs.writeFile(outbox.file, stale + '\n');
+  const restart = new Outbox({ directory, write: async () => { throw Error('already archived entry replayed'); }, env: {}, log: message => logs.push(message), schedule: () => ({ unref() {} }) });
+  await restart.ready; await restart.flush(); restart.close();
+  assert.equal(restart.entries.length, 0); assert.equal(logs.filter(l => /dead-lettered/.test(l)).length, 1);
+});

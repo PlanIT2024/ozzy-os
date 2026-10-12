@@ -3,6 +3,7 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { createMirrorClient } from './client.js';
 import { Outbox } from './outbox.js';
+import { redact } from './redact.js';
 
 const methods = ['nodeSeen', 'nodeGone', 'taskUpsert', 'approvalRequested', 'approvalDecided', 'leaseStarted', 'leaseEnded', 'event'];
 export const noSync = Object.freeze(Object.fromEntries([...methods, 'close'].map(name => [name, () => {}])));
@@ -29,9 +30,10 @@ export function startBrainSync({ env = process.env, ...options } = {}) {
   return createSync({ ...options, env: captured });
 }
 
-export function createSync({ root, env = process.env, makeClient = () => createMirrorClient(env), now = Date.now, log = console.warn, schedule = setTimeout, interval = setInterval } = {}) {
-  if (env.BITOS_SUPABASE !== '1') return noSync;
-  const owner = env.BITOS_OWNER_USER_ID, workspace = env.BITOS_DEFAULT_WORKSPACE_ID;
+export function createSync({ root, env = process.env, makeClient = createMirrorClient, now = Date.now, log = console.warn, schedule = setTimeout, interval = setInterval } = {}) {
+  const settings = Object.freeze({ ...env });
+  if (settings.BITOS_SUPABASE !== '1') return noSync;
+  const owner = settings.BITOS_OWNER_USER_ID, workspace = settings.BITOS_DEFAULT_WORKSPACE_ID;
   const directory = path.join(root, 'data');
   const nodes = new Map(), tasks = new Map(), leases = new Map(), approvals = new Map();
   const iso = () => new Date(now()).toISOString();
@@ -57,25 +59,34 @@ export function createSync({ root, env = process.env, makeClient = () => createM
   }
   const taskId = thread => stableUUID(workspace, 'task', String(thread));
   async function write(entry) {
-    client ||= await makeClient(env);
+    client ||= await makeClient(settings);
     if (!client) throw new Error('Mirror client unavailable');
     let result;
-    if (entry.operation === 'ownerOffline') result = await client.from('nodes').update({ status: 'offline' }).eq('owner_id', owner);
+    if (entry.operation === 'ownerOffline') {
+      if (!entry.filter?.owner_id) throw Object.assign(new Error('Owner offline reset is missing owner_id'), { code: 'BITOS_CONFIG', hint: 'Set BITOS_OWNER_USER_ID in the brain-only settings' });
+      result = await client.from('nodes').update(entry.payload).eq('owner_id', entry.filter.owner_id);
+    }
     else if (entry.operation === 'event') result = await client.from('task_events').upsert(entry.payload, { onConflict: 'client_event_id', ignoreDuplicates: true });
     else if (entry.operation === 'lease') {
       result = await client.from('leases').upsert(entry.payload, { onConflict: 'id', ignoreDuplicates: true });
       if (result.error && /already has an active lease/.test(result.error.message || '')) {
-        warn('bIT OS active lease conflict; local grant unchanged'); return;
+        warn(`bIT OS active lease conflict; local grant unchanged ${JSON.stringify(redact({ table: entry.table, operation: entry.operation,
+          code: result.error.code || null, message: result.error.message, hint: result.error.hint || null,
+        }, settings))}`); return;
       }
     } else if (entry.operation === 'leaseEnd') {
       // A rejected watch/control insert has no database row to revoke.
       result = await client.from('leases').update(entry.payload).eq('id', entry.payload.id);
     } else result = await client.from(entry.table).upsert(entry.payload, { onConflict: 'id' });
-    if (result?.error) throw new Error('Mirror write failed');
+    if (result?.error) throw Object.assign(new Error(result.error.message || 'Mirror write failed'), { code: result.error.code, hint: result.error.hint });
   }
-  const outbox = new Outbox({ directory, write, env, log, now, schedule });
+  const outbox = new Outbox({ directory, write, env: settings, log, now, schedule,
+    migrate: entry => entry.operation === 'ownerOffline' && (!entry.filter?.owner_id || !Object.keys(entry.payload || {}).length)
+      ? { ...entry, payload: { status: 'offline' }, filter: { owner_id: entry.filter?.owner_id || owner }, next: 0 }
+      : entry,
+  });
   // Startup reset must follow old outbox replay but precede current connections.
-  outbox.enqueue('nodes', {}, 'ownerOffline');
+  outbox.enqueue('nodes', { status: 'offline' }, 'ownerOffline', { owner_id: owner });
   const queue = (table, row, op) => outbox.enqueue(table, row, op);
   function task(thread, status = 'running', machine) {
     if (!thread) return null;

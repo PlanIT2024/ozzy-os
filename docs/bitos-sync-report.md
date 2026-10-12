@@ -33,7 +33,8 @@ Implementation commits:
   fire-and-forget, with stable deterministic
   owner/relay node UUIDs recorded in `data/bitos-node-ids.json`, stable task
   UUIDs per workspace/conversation. Owner-offline startup reset follows old
-  replay and precedes new connections. Heartbeats throttle to 60 seconds;
+  entries and is queued before new connections; failed resets do not stall
+  live-node writes. Heartbeats throttle to 60 seconds;
   a one-second sweep marks nodes offline after 90 seconds without messages.
 - `src/brain/index.js`, `nodeHub.js`, `runner.js`, `discord.js`, `screens.js`,
   `controls.js`, `permissions.js`: additive lifecycle calls for connects,
@@ -155,7 +156,7 @@ No audit fix or forced/unrelated dependency upgrade was performed.
 
 ## Validation
 
-`npm test`: **150 passed, zero failed**, including restart replay and real
+`npm test`: **153 passed, zero failed**, including restart replay and real
 SDK child-environment tests.
 Final `git status --short` is empty after committing the implementation and
 report; the branch has no untracked or modified files.
@@ -253,3 +254,38 @@ Table Editor proof must show OZZY-AI online, one small task with an owner
 button, tasks/approvals/task_events summaries, offline transition and outbox
 growth/drain. No live rows are claimed yet. Do not paste secrets, typed text,
 screenshot pixels or file contents into proof output.
+
+## Live mirror recovery fix
+
+The existing startup capture already copied settings before process.env was
+scrubbed. Lazy initialization now takes an explicit frozen settings snapshot;
+the client module has no process.env fallback. Tests forbid further reads of
+the original startup env, change global settings after scrubbing, force lazy
+initialization to retry, and verify the original URL/key/owner are still used.
+
+ownerOffline entries now persist `{ "status": "offline" }` plus a separate
+`filter.owner_id`. The adapter updates nodes using that entry's payload/filter,
+not globals. Legacy entries with an empty payload/missing filter are upgraded
+on load using the captured owner and become immediately eligible for retry.
+No manual outbox deletion or environment-file edit is needed.
+
+Supabase errors retain code/message/hint instead of becoming a generic error.
+Logs and saved last_error fields pass through redact(), with table/operation
+included and captured credentials removed. The underlying live database error
+has not been observed by the agent; the new log will expose it after restart.
+
+Entries retry independently across entities. Writes to the same task, approval
+or lease keep their order so older retries cannot overwrite newer decisions.
+New rows preempt backoff timers. After 20 failed attempts, an entry moves to
+`data/bitos-outbox-dead.jsonl` with its last redacted error and a private-file
+mode of 600. Each entry has a persisted outbox UUID; the dead journal suppresses
+duplicate archiving/logging if a restart happens between append and live-file
+removal. This fix leaves .env, .env.brain, services and live data untouched.
+
+Exact user commands after this commit is on the running branch:
+
+```sh
+systemctl --user restart bit-brain
+journalctl --user -u bit-brain -n 100 --no-pager
+journalctl --user -u bit-brain -f
+```

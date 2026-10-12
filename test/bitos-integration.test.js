@@ -9,6 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { runBrain } from '../src/brain/index.js';
 import { startBrainSync } from '../src/bitos/sync.js';
+import { createMirrorClient } from '../src/bitos/client.js';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { createSync } from '../src/bitos/sync.js';
 import { Runner } from '../src/brain/runner.js';
@@ -133,10 +134,10 @@ test('approval mirrors request and Discord button; thrown DB error cannot escape
   await f.drain();
   await assert.doesNotReject(client.listeners('interactionCreate')[0]({ user: { id: 'owner' }, customId: `approve:${id}:yes`, channel: thread, channelId: thread.id, message: { id: 'card' }, isChatInputCommand: () => false, isButton: () => true, deferUpdate: async () => {} }));
   assert.equal(await pending, true); adapter.close();
-  assert.ok(f.sync.outbox.entries.length > 0); f.db.fail(false); f.sync.outbox.entries[0].next = 0; await f.drain();
+  assert.ok(f.sync.outbox.entries.length > 0); f.db.fail(false); for (const entry of f.sync.outbox.entries) entry.next = 0; await f.drain();
   const requests = f.db.calls.filter(c => c.table === 'approvals');
-  assert.deepEqual(requests.map(c => c.row.status), ['pending', 'approved']);
-  const approval = f.db.rows.approvals.get(id); assert.equal(approval.decided_by, env.BITOS_OWNER_USER_ID); assert.ok(approval.decided_at);
+  assert.ok(requests.some(c => c.row.status === 'pending')); assert.ok(requests.some(c => c.row.status === 'approved'));
+  const approval = f.db.rows.approvals.get(id); assert.equal(approval.status, 'approved'); assert.equal(approval.decided_by, env.BITOS_OWNER_USER_ID); assert.ok(approval.decided_at);
   assert.equal(approval.action_detail.text_length, 20); assert.equal(approval.risk, 'risky');
   assert.ok(!JSON.stringify(f.db.calls).includes('private typed marker'));
 });
@@ -260,6 +261,56 @@ test('brain startup captures settings once and scrubs real SDK child environment
   assert.equal(captured.BITOS_SUPABASE, '1'); assert.ok(Object.isFrozen(captured));
   assert.deepEqual(reads, Object.fromEntries(Object.keys(settings).map(key => [key, 1])));
   assert.ok(child.exitCode !== null); scrubbed();
+});
+
+test('scrub-then-write and lazy client retry use captured values; ownerOffline persists its payload and owner filter', async t => {
+  const f = await fixture(t); await f.drain(); await f.sync.close();
+  const saved = Object.fromEntries(Object.entries(process.env).filter(([key]) => /^(SUPABASE_|BITOS_)/.test(key)));
+  t.after(() => { for (const key of Object.keys(process.env)) if (/^(SUPABASE_|BITOS_)/.test(key)) delete process.env[key]; Object.assign(process.env, saved); });
+  const original = { ...env, SUPABASE_URL: 'https://project-ref.supabase.co', SUPABASE_SERVICE_ROLE_KEY: 'fake-private-service-key' };
+  let forbidRead = false;
+  const source = new Proxy({ ...original }, { get: (target, name) => { if (forbidRead) throw Error('startup env read after scrub'); return target[name]; } });
+  Object.assign(process.env, original);
+  const calls = [], creations = [], logs = []; let time = Date.now(), attempt = 0;
+  const client = { from: table => ({
+    update: payload => ({ eq: async (column, value) => { calls.push({ table, payload, column, value }); return { error: null }; } }),
+    upsert: async () => ({ error: null }),
+  }) };
+  const sync = startBrainSync({ root: f.root, env: source, now: () => time, schedule: () => ({ unref() {} }), log: message => logs.push(message),
+    makeClient: captured => createMirrorClient(captured, async () => {
+      if (!attempt++) throw Object.assign(new Error('temporary client initialization failure'), { code: 'FAKE_INIT' });
+      return { createClient: (url, key) => { creations.push({ url, key }); return client; } };
+    }),
+  });
+  t.after(() => sync.close()); forbidRead = true;
+  assert.ok(Object.keys(source).every(key => !/^(SUPABASE_|BITOS_)/.test(key)));
+  process.env.SUPABASE_URL = 'https://wrong-host.invalid'; process.env.SUPABASE_SERVICE_ROLE_KEY = 'wrong-key'; process.env.BITOS_OWNER_USER_ID = 'wrong-owner';
+  await sync.outbox.ready;
+  const reset = sync.outbox.entries.find(e => e.operation === 'ownerOffline');
+  assert.deepEqual(reset.payload, { status: 'offline' }); assert.deepEqual(reset.filter, { owner_id: original.BITOS_OWNER_USER_ID });
+  await sync.outbox.flush(); time += 1000; await sync.outbox.flush();
+  assert.deepEqual(creations, [{ url: original.SUPABASE_URL, key: original.SUPABASE_SERVICE_ROLE_KEY }]);
+  assert.deepEqual(calls, [{ table: 'nodes', payload: { status: 'offline' }, column: 'owner_id', value: original.BITOS_OWNER_USER_ID }]);
+  assert.match(logs.join('\n'), /FAKE_INIT/); await sync.close();
+});
+
+test('legacy empty ownerOffline entries are repaired and Supabase error code/message/hint are redacted', async t => {
+  const f = await fixture(t); await f.sync.close();
+  await fs.writeFile(path.join(f.root, 'data/bitos-outbox.jsonl'), JSON.stringify({ table: 'nodes', payload: {}, operation: 'ownerOffline', attempts: 9, next: Date.now() + 300000 }) + '\n');
+  const secret = 'fake-sensitive-service-role', logs = [], requests = [];
+  const sync = createSync({ root: f.root, env: { ...env, SUPABASE_SERVICE_ROLE_KEY: secret }, schedule: () => ({ unref() {} }), log: message => logs.push(message), makeClient: () => ({
+    from: table => ({ update: payload => ({ eq: async (column, value) => {
+      requests.push({ table, payload, column, value });
+      return { error: { code: '22P02', message: `Invalid owner UUID ${secret}`, hint: `Check captured owner; ${secret}` } };
+    } }) }),
+  }) });
+  await sync.outbox.ready; const legacy = sync.outbox.entries[0]; assert.equal(legacy.next, 0);
+  await sync.outbox.flush();
+  assert.deepEqual(requests[0], { table: 'nodes', payload: { status: 'offline' }, column: 'owner_id', value: env.BITOS_OWNER_USER_ID });
+  assert.equal(legacy.attempts, 10); assert.equal(legacy.last_error.code, '22P02');
+  for (const text of [/22P02/, /Invalid owner UUID/, /Check captured owner/, /"table":"nodes"/, /"operation":"ownerOffline"/]) assert.match(logs.join('\n'), text);
+  assert.ok(!logs.join('\n').includes(secret));
+  assert.ok(!(await fs.readFile(sync.outbox.file, 'utf8')).includes(secret)); await sync.close();
 });
 
 test('service templates isolate brain settings and node/relay contain no Supabase references', async () => {
