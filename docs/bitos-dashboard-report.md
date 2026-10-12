@@ -16,22 +16,22 @@ Verified with `npm view <package> time --json` on 2026-10-12. All selected relea
 | --- | --- | --- |
 | react | 19.3.0 | 2026-09-09T17:21:30.071Z |
 | react-dom | 19.3.0 | 2026-09-09T17:17:39.744Z |
-| @supabase/supabase-js | 2.57.4 | 2025-09-09T14:36:47.439Z |
+| @supabase/supabase-js | 2.117.2 | 2026-09-25T10:08:51.684Z |
 | @types/react | 19.3.0 | 2026-09-09T18:08:49.750Z |
 | @types/react-dom | 19.3.0 | 2026-09-09T18:07:51.886Z |
 | typescript | 5.9.3 | 2025-09-30T21:19:38.784Z |
 | vite | 7.3.6 | 2026-06-25T01:51:49.605Z |
 | vitest | 4.1.11 | 2026-08-18T14:27:07.240Z |
 
-Supabase 2.117.2 embeds a forbidden secret-prefix literal in client key validation. The compatible 2.57.4 release was selected to pass the strict bundle scanner without bypasses or string rewriting. Every output file is recursively scanned after build; all three forbidden markers fail the build. `.env.local` and `dist/` are ignored; the placeholder `.env.example` is tracked.
+Supabase is pinned to 2.117.2, matching the brain. The scanner recursively checks every output file after build. It rejects `sb_secret_[A-Za-z0-9_-]{16,}`, JWTs beginning with `eyJ` whose decoded payload has `role: "service_role"` (including an empty signature), and the literal `SUPABASE_SERVICE_ROLE_KEY`. Bare SDK prefix strings and bare role text are allowed; no bundle rewriting is used. `.env.local` and `dist/` are ignored; the placeholder `.env.example` is tracked.
 
 ## Validation
 
-- Dashboard `npm test`: 2 files, 7 tests passed, no network. Covers online/stale/offline/sleeping, missing/invalid heartbeats, the three-minute boundary, all task columns, cancelled exclusion, quick-add payload, read-only approvals, and recursive planted fake-secret detection with CLI failure for all three markers.
+- Dashboard `npm test`: 2 files, 8 tests passed, no network. Covers online/stale/offline/sleeping, missing/invalid heartbeats, the three-minute boundary, all task columns, cancelled exclusion, quick-add payload, read-only approvals, and recursive planted-secret detection with CLI failure for all three secret types, the 16-character suffix boundary, unsigned service-role JWTs, and acceptance of SDK prefix validation, public JWTs and malformed token-like text.
 - Dashboard `npm run build`: TypeScript, Vite production bundle and strict credential scan passed.
 - Root `npm test`: 153 tests passed. Existing subprocess/socket fixtures required execution outside the restricted sandbox.
 - `node --check apps/dashboard/scripts/rls-smoke.mjs`: passed.
-- Dev server: started on port 5173 and returned HTTP 200 at http://localhost:5173/.
+- Dev server: started on port 5173 and returned HTTP 200 at http://127.0.0.1:5173/; Vite printed only a Local URL and no Network address.
 - Browser interaction and live Supabase RLS checks were not run. The owner runs the live smoke test below.
 
 ## Dev server
@@ -50,7 +50,7 @@ Edit `apps/dashboard/.env.local` with your Supabase project URL and publishable 
 npm run dev
 ```
 
-Open **http://localhost:5173**. The server binds to `0.0.0.0` and uses a strict port. On a phone on the same network, use the host's LAN address on port 5173. Sign in with your existing Supabase email/password.
+Open **http://127.0.0.1:5173** (localhost on machines resolving it to IPv4). Both Vite `server.host` and `preview.host` are `127.0.0.1`; the dev command has no host override and uses strict port 5173. The server is accessible only from the host machine. Sign in with your existing Supabase email/password.
 
 ## Live RLS smoke test
 
@@ -64,3 +64,7 @@ npm run rls-smoke
 Use an interactive terminal. Enter your email and password (hidden) at the prompts; credentials are not saved and tokens are never printed. Multiple writable memberships trigger a workspace selection prompt.
 
 The script checks anonymous nodes/tasks/workspaces each return zero rows; authenticates; checks OZZY-AI visibility; inserts a typed inbox task; requires RLS error code 42501 for task_events/approvals insert attempts; and deletes the test task in a finally block. It prints a PASS/FAIL table and exits nonzero on failure. Unexpected successful child inserts are removed by task cascade. If cleanup fails, remove the “Dashboard RLS smoke test” task manually. Authentication/connectivity failures fail the run instead of counting as policy success.
+
+## npm audit (follow-up, 2026-10-12)
+
+`cd apps/dashboard && npm audit --json` reports **1 low**, **0 moderate**, **0 high**, **0 critical** vulnerabilities; it exits 1 because a finding is present. The affected transitive development dependency is `esbuild` 0.27.7. Advisory [GHSA-g7r4-m6w7-qqqr](https://github.com/advisories/GHSA-g7r4-m6w7-qqqr), “esbuild allows arbitrary file read when running the development server on Windows,” covers `>=0.27.3 <0.28.1`. npm reports a fix is available. No audit fixes were applied.
