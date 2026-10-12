@@ -24,9 +24,9 @@ The brain's existing state directory is `<root>/data` (`src/shared.js`,
 
 ## Repository differences and prerequisites
 
-- No `supabase/` directory, migration 0001, table definitions or risk_class
-  enum exists in this checkout. Exact column and enum mapping requires the
-  user's existing 0001; do not invent a replacement schema.
+- At inventory time migration 0001 was absent. The supplied schema is now
+  committed as `a586bbf`. Its generated event identity and before-insert
+  active-lease trigger use migration 0003 for ordinary replay-safe upserts.
 - Tasks are serialized conversational runs, including DMs and scheduled
   threads. There is no separate task entity or explicit task cancellation
   API. Mirror one stable task UUID per Discord channel/thread, with run
