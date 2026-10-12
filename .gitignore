@@ -8,3 +8,8 @@ data/
 relay/node_modules/
 relay/.env
 relay/.env.*
+
+# bIT OS dashboard
+apps/dashboard/.env.local
+apps/dashboard/dist/
+!apps/dashboard/.env.example
