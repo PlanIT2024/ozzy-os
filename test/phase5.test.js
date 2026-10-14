@@ -18,7 +18,7 @@ import { screenshotTools } from '../src/brain/tools.js';
 import { Runner } from '../src/brain/runner.js';
 import { Budget } from '../src/brain/budget.js';
 import { NodeHub } from '../src/brain/nodeHub.js';
-import { startNode } from '../src/node/index.js';
+import { startNode } from '../scripts/test-fixtures/node.js';
 import { sodium, publicHex, nodeKeys } from '../src/transport/crypto.js';
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(fn) { for(let i=0;i<200;i++){if(fn())return;await pause(10);}throw new Error('Timed out'); }

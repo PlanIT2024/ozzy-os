@@ -74,7 +74,7 @@ export class AgentManager extends EventEmitter {
       child.on('message', m => {
         if (run.ending || !m || typeof m !== 'object') return;
         if (m.type === 'approval') void this.approve(run, m).catch(() => { if (run.child?.connected) run.child.send({ type: 'decision', id: m.id, decision: 'deny', reason: 'Invalid approval' }, () => {}); });
-        if (m.type === 'event') this.emitRun(run, 'agent.event', { kind: 'progress', summary: wireText(m.summary, run.policy.projects) });
+        if (m.type === 'event') this.emitRun(run, 'agent.event', { kind: m.kind === 'message' ? 'message' : 'progress', summary: wireText(m.summary, run.cwd) });
         if (m.type === 'finished') void this.stop(run.id, m.status === 'done' ? 'done' : 'failed', m.summary);
       });
       child.on('error', () => void this.stop(run.id, 'failed', 'Executor could not start'));
@@ -94,7 +94,7 @@ export class AgentManager extends EventEmitter {
         const finish = d => { clearTimeout(timer); run.approvals.delete(requestId); resolve(d); };
         const timer = setTimeout(() => finish('deny'), this.approvalMs);
         run.approvals.set(requestId, { resolve: finish });
-        this.emitRun(run, 'agent.approval_request', { requestId, executor: run.executor, action: wireText(m.action, run.policy.projects), detail: wireText(m.detail, run.policy.projects) });
+        this.emitRun(run, 'agent.approval_request', { requestId, executor: run.executor, action: wireText(m.action, run.cwd), detail: wireText(m.detail, run.cwd) });
       });
     }
     if (run.child?.connected) run.child.send({ type: 'decision', id: m.id, decision, reason }, () => {});
@@ -111,7 +111,7 @@ export class AgentManager extends EventEmitter {
     signal('SIGKILL');
     let stat = '';
     try { stat = git(run.cwd, 'diff', '--no-ext-diff', '--no-textconv', '--stat', run.base); const untracked = git(run.cwd, 'ls-files', '--others', '--exclude-standard'); if (untracked) stat += `\nUntracked files:\n${untracked}`; } catch { stat = 'Diff unavailable (worktree setup did not complete)'; }
-    this.emitRun(run, 'agent.finished', { status, branch: run.branch, summary: wireText(`${summary || status}\n${stat || 'No tracked changes'}`, run.policy.projects) });
+    this.emitRun(run, 'agent.finished', { status, branch: run.branch, summary: wireText(`${summary || status}\n${stat || 'No tracked changes'}`, run.cwd) });
     this.runs.delete(id); run.resolve(); return run.finished;
   }
   stopAll() { return Promise.all([...this.runs.keys()].map(id => this.stop(id))); }

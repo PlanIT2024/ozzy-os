@@ -16,7 +16,7 @@ import { ApprovalRelay, commands, createDiscord } from '../src/brain/discord.js'
 import { createPermissions } from '../src/brain/permissions.js';
 import { encodeCapture } from '../src/node/screen/image.js';
 import { NodeHub, validCapabilities } from '../src/brain/nodeHub.js';
-import { startNode } from '../src/node/index.js';
+import { startNode } from '../scripts/test-fixtures/node.js';
 import { sodium, nodeKeys, publicHex } from '../src/transport/crypto.js';
 const focus={app:'Obsidian',window:'Test note',pid:123,windowId:1};
 const observation={focused:focus,target:focus,targetKnown:true};

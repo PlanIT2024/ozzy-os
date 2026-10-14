@@ -11,7 +11,7 @@ import { startRelay, clientsFromEnv } from '../relay/index.js';
 import { pack, unpack, MAX_MESSAGE } from '../relay/wire.js';
 import { Cipher, SecurePeer, sodium, publicHex, nodeKeys, loadKey } from '../src/transport/crypto.js';
 import { NodeHub, parseTokens } from '../src/brain/nodeHub.js';
-import { startNode } from '../src/node/index.js';
+import { startNode } from '../scripts/test-fixtures/node.js';
 import { Growth } from '../src/brain/growth.js';
 import { createPermissions } from '../src/brain/permissions.js';
 import { ApprovalRelay } from '../src/brain/discord.js';

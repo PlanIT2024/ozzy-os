@@ -10,7 +10,8 @@ import { skillOptions } from '../src/brain/runner.js';
 import { WebLedger } from '../src/brain/web.js';
 import { createPermissions } from '../src/brain/permissions.js';
 import { createDiscord, machineLine, machinesText } from '../src/brain/discord.js';
-import { usableDisks, startNode } from '../src/node/index.js';
+import { usableDisks } from '../src/node/index.js';
+import { startNode } from '../scripts/test-fixtures/node.js';
 import { sodium, SecurePeer } from '../src/transport/crypto.js';
 import { runBrain } from '../src/brain/index.js';
 

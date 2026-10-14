@@ -7,7 +7,7 @@ import { WebSocket } from 'ws';
 import { createPermissions } from '../src/brain/permissions.js';
 import { Budget } from '../src/brain/budget.js';
 import { NodeHub, parseTokens } from '../src/brain/nodeHub.js';
-import { startNode } from '../src/node/index.js';
+import { startNode } from '../scripts/test-fixtures/node.js';
 import { ApprovalRelay, acceptsMessage, splitMessage, machinesText, createDiscord } from '../src/brain/discord.js';
 import { Runner, activeMood } from '../src/brain/runner.js';
 import { sodium, publicHex, nodeKeys } from '../src/transport/crypto.js';

@@ -6,8 +6,10 @@ const approvals = new Map(); let next = 0;
 const send = m => { if (process.connected) process.send(m); };
 const approve = (action, detail) => new Promise(resolve => { const id = ++next; approvals.set(id, resolve); send({ type: 'approval', id, action, detail }); });
 
-export async function codex({ cwd, prompt }, { spawnProcess = spawn, ask = approve, event = summary => send({ type: 'event', summary }) } = {}) {
+export async function codex({ cwd, prompt }, { spawnProcess = spawn, ask = approve, event = (summary, kind) => send({ type: 'event', summary, kind }), now = Date.now } = {}) {
   const child = spawnProcess('codex', ['app-server', '--listen', 'stdio://'], { cwd, env: minimalEnv(), stdio: ['pipe','pipe','pipe'] });
+  let lastProgress = -Infinity;
+  const progress = summary => { const time = now(); if (time - lastProgress >= 1000) { lastProgress = time; event(summary, 'progress'); } };
   let id = 0; const pending = new Map(); const items = new Map();
   let complete, fail;
   const done = new Promise((resolve, reject) => { complete = resolve; fail = reject; });
@@ -32,12 +34,13 @@ export async function codex({ cwd, prompt }, { spawnProcess = spawn, ask = appro
       let response;
       if (m.method === 'item/fileChange/requestApproval' && !detail.changes?.length) response = { decision: 'deny' };
       else response = await ask(m.method, detail);
-      write({ id: m.id, result: m.method === 'item/permissions/requestApproval' ? { permissions: {}, scope: 'turn' } : { decision: response.decision === 'allow' ? 'accept' : (m.params?.availableDecisions?.includes('decline') ? 'decline' : 'cancel') } });
+      write({ id: m.id, result: m.method === 'item/permissions/requestApproval' ? { permissions: {}, scope: 'turn' } : { decision: response.decision === 'allow' ? 'accept' : 'decline' } });
       return;
     }
     if (m.params?.item) items.set(m.params.item.id, m.params.item);
-    if (m.method === 'item/agentMessage/delta') event(m.params?.delta || '');
-    if (m.method === 'item/completed' && ['agentMessage','commandExecution'].includes(m.params?.item?.type)) event(m.params.item.text || `${m.params.item.command}: ${m.params.item.status}`);
+    if (m.method === 'item/agentMessage/delta') progress('Codex is working');
+    if (m.method === 'item/completed' && m.params?.item?.type === 'agentMessage') event(m.params.item.text || '', 'message');
+    if (m.method === 'item/completed' && m.params?.item?.type === 'commandExecution') progress(`${m.params.item.command}: ${m.params.item.status}`);
     if (m.method === 'turn/completed') m.params?.turn?.status === 'completed' ? complete('Codex completed') : fail(new Error('Codex turn failed or was interrupted'));
   })().catch(fail); });
   try {
@@ -49,7 +52,8 @@ export async function codex({ cwd, prompt }, { spawnProcess = spawn, ask = appro
   } finally { lines.close(); child.kill('SIGTERM'); for (const p of pending.values()) p.reject(new Error('Run finished')); }
 }
 
-export async function claude({ cwd, prompt }, { queryFn, ask = approve, event = summary => send({ type: 'event', summary }) } = {}) {
+export async function claude({ cwd, prompt }, { queryFn, ask = approve, event = (summary, kind) => send({ type: 'event', summary, kind }), now = Date.now } = {}) {
+  let lastProgress = -Infinity;
   const query = queryFn || (await import('@anthropic-ai/claude-agent-sdk')).query;
   const permission = async (name, input) => {
     const reason = denial(name, input, cwd);
@@ -73,7 +77,11 @@ export async function claude({ cwd, prompt }, { queryFn, ask = approve, event = 
   } });
   try {
     for await (const m of stream) {
-      if (m.type === 'assistant') event(m.message?.content?.filter(c => c.type === 'text').map(c => c.text).join('\n') || 'Claude tool activity');
+      if (m.type === 'assistant') {
+        const text = m.message?.content?.filter(c => c.type === 'text').map(c => c.text).join('\n');
+        if (text) event(text, 'message');
+        else if (now() - lastProgress >= 1000) { lastProgress = now(); event('Claude tool activity', 'progress'); }
+      }
       if (m.type === 'result') {
         if (m.is_error || m.subtype !== 'success') throw new Error((m.errors || [m.result || m.subtype]).join('; '));
         return m.result || 'Claude completed';

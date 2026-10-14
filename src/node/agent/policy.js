@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { simpleCommands } from './shell.js';
 import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
@@ -95,22 +96,43 @@ export function denial(action, detail, cwd) {
     if (!command) return 'Missing command';
     // Fail closed on shell indirection; a string filter cannot safely interpret it.
     if (/[$`\\]|(?:^|[\s"'=<>])~|(?:^|\/)\.\.(?:\/|$)/.test(command)) return 'Indirect or outside path access is forbidden';
-    if (/\b(?:eval|exec|source|ssh|scp|sftp|osascript)\b|(?:^|[;&|]\s*)\.\s|\b(?:python[\d.]*|node|ruby|perl|sh|bash|zsh)\s+-(?:c|e)\b/.test(command)) return 'Indirect command execution is forbidden';
-    if (/\bgit\b/.test(command) && /(?:--git-dir|--work-tree|\s-C\s|\s-c\s|\b(?:config|worktree|checkout|switch|clean|reset)\b)/.test(command)) return 'Git checkout or configuration mutation is forbidden';
-    // Inspect every shell word, including redirection targets and relative symlinks.
-    const words = command.match(/"[^"\n]*"|'[^'\n]*'|[^\s;&|<>]+/g) || [];
-    for (let word of words) {
-      word = word.replace(/^["']|["']$/g, '').replace(/^(?:--?)?[\w.-]+=/, '');
-      if (word.startsWith('-')) continue;
-      if (unsafePath(word)) return 'Access outside the worktree or to sensitive paths is forbidden';
+    let commands;
+    try { commands = simpleCommands(command); } catch (e) { return e.message; }
+    if (!commands.length) return 'Missing command';
+    for (const words of commands) {
+      const simple = words.join(' ');
+      // Re-check decoded words: quoting must not conceal a denied operation.
+      if (forbiddenPath(simple)) return 'Sensitive path access is forbidden';
+      if (/\b(push|deploy|publish|sudo|railway|vercel|wrangler)\b/i.test(simple)) return 'Push, deployment, publication and privilege escalation are forbidden';
+      if (/\brm\b[^\n]*(?:-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r|-r\s+-f|-f\s+-r)/i.test(simple)) return 'Recursive forced removal is forbidden';
+      if (/\b(?:eval|exec|source|ssh|scp|sftp|osascript)\b|^\.\s|\b(?:python[\d.]*|node|ruby|perl|sh|bash|zsh)\s+-(?:c|e)\b/.test(simple)) return 'Indirect command execution is forbidden';
+      if (/\bgit\b/.test(simple) && /(?:--git-dir|--work-tree|\s-C\s|\s-c\s|\b(?:config|worktree|checkout|switch|clean|reset)\b)/.test(simple)) return 'Git checkout or configuration mutation is forbidden';
+      for (let word of words) {
+        word = word.replace(/^(?:--?)?[\w.-]+=/, '');
+        if (word.startsWith('-')) continue;
+        if (unsafePath(word)) return 'Access outside the worktree or to sensitive paths is forbidden';
+      }
     }
-
   }
   return null;
 }
-export function wireText(value, projects = []) {
-  let s = typeof value === 'string' ? value : JSON.stringify(value) ?? '';
-  for (const p of projects) s = s.split(p.absolutePath).join(`[${p.alias}]`);
-  // Preserve relative filenames and branch names while removing absolute paths.
-  return s.replace(/(^|[\s"'(=:\[])((?:~\/|\/)[^\s"'<>\\]*)/g, '$1[path]').slice(0, 12000);
+export function wireText(value, cwd) {
+  const root = cwd?.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const paths = new RegExp(`(["'])((?:~\\/|\\/)[^"'\\n]+)\\1|(^|[\\s(=:\\[])((?:${root ? `${root}(?=[/\\s"'<>),;]|$)|` : ''}~\\/|\\/)[^\\s"'<>\\\\),;]*)`, 'g');
+  const render = (text, commands = true) => {
+    // Match quoted paths as a whole (including spaces), or unquoted path tokens.
+    const redact = token => {
+      if (commands && /^\/(?:login|logout|help|status|clear|compact|resume|model|permissions)[.!?]?$/.test(token)) return token;
+      if (cwd && path.isAbsolute(token) && inside(cwd, token)) return path.relative(fs.realpathSync(cwd), resolvedPath(cwd, token)) || '.';
+      return '[path]';
+    };
+    return text.replace(paths,
+      (match, quote, quoted, prefix, plain, offset, source) => {
+        if (!quote && prefix === ':' && plain.startsWith('//') && /[a-z][a-z\d+.-]*$/i.test(source.slice(0, offset))) return match;
+        return quote ? `${quote}${redact(quoted)}${quote}` : `${prefix}${redact(plain)}`;
+      });
+  };
+  // Render string values before serializing, so JSON escaping cannot hide paths.
+  const visit = (v, key = '') => typeof v === 'string' ? render(v, !/^(path|file_path|filePath|cwd|grantRoot|target|destination)$/i.test(key)) : Array.isArray(v) ? v.map(value => visit(value, key)) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, val]) => [render(k), visit(val, k)])) : v;
+  return (typeof value === 'string' ? render(value) : JSON.stringify(visit(value)) ?? '').slice(0, 12000);
 }

@@ -23,7 +23,7 @@ export class AgentBridge extends EventEmitter {
     if (!this.available()) throw new Error('Agent execution is disabled');
     if (!['agent.capabilities','agent.run','agent.stop','agent.decide'].includes(method)) throw new Error('Unsupported agent method');
     try { return await (await this.client()).request(method, params); }
-    catch (e) { throw new Error(wireText(e.message, this.policy().projects || [])); }
+    catch (e) { throw new Error(wireText(e.message)); }
   }
   connectionState(online) {
     this.online = online;
