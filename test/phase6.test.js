@@ -48,7 +48,7 @@ test('ordinary launch failure ends task but preserves original grant; safety fai
   assert.ok(input.session);assert.ok(backend.releases);assert.equal(input.session.state.count,1);assert.equal(input.session.state.lastDelivery,undefined);
 });
 
-test('desktop launch isolates noisy child output and waits for asynchronous D-Bus completion',()=>{
+test('desktop launch isolates noisy child output and waits for asynchronous D-Bus completion',{ skip: process.platform !== 'linux' && 'Requires Linux GI/desktop portal' },()=>{
   const code=`import importlib.util,sys,tempfile,pathlib,json
 s=importlib.util.spec_from_file_location('apps',sys.argv[1]);p=importlib.util.module_from_spec(s);s.loader.exec_module(p)
 with tempfile.TemporaryDirectory() as tmp:
@@ -170,7 +170,7 @@ test('target previews are small crops attached in memory; grants persist with or
   const restored=new ControlGrants({root:b.root,hub:b.hub,screens:b.screens});t.after(()=>restored.close());assert.equal(restored.grant('A').id,b.controls.grant('A').id);assert.equal(restored.grant('A').count,2);assert.equal(restored.grant('A').expiresAt,b.controls.grant('A').expiresAt);
   assert.ok(commands().find(command=>command.name==='control'));assert.equal(validCapabilities(['status','screen','input']),true);assert.equal(validCapabilities(['status','input']),false);
 });
-test('Python helper releases held keys/buttons on failure and shutdown, refuses blocked combo and rejects unshared monitor',()=>{
+test('Python helper releases held keys/buttons on failure and shutdown, refuses blocked combo and rejects unshared monitor',{ skip: process.platform !== 'linux' && 'Requires Linux GI/desktop portal' },()=>{
   const helper=path.resolve('src/node/input/portal.py');
   const code=`import importlib.util,sys
 s=importlib.util.spec_from_file_location('input_portal',sys.argv[1]);p=importlib.util.module_from_spec(s);s.loader.exec_module(p)
@@ -254,7 +254,7 @@ test('Discord control commands enforce owner, thread, taint and explicit with-sc
   tainted=true;await handler(request('control','on',{withScreen:true}));assert.match(response,/Web-tainted/);assert.equal(b.screens.active('A'),null);
 });
 
-test('resident helper consumes batched release commands before pipe EOF, without buffering them indefinitely',()=>{
+test('resident helper consumes batched release commands before pipe EOF, without buffering them indefinitely',{ skip: process.platform !== 'linux' && 'Requires Linux GI/desktop portal' },()=>{
   const helper=path.resolve('src/node/input/portal.py');
   const code=`import importlib.util,sys
 s=importlib.util.spec_from_file_location('input_portal',sys.argv[1]);p=importlib.util.module_from_spec(s);s.loader.exec_module(p)
@@ -355,7 +355,7 @@ test('expiry warning fires two minutes before expiry once, survives restart, and
   t.mock.timers.tick(60000);assert.equal(b.notices.filter(n=>n.includes('expires in 2 minutes')).length,1);
 });
 
-test('resident portal helper independently checks real focus, Discord and targets before input',()=>{
+test('resident portal helper independently checks real focus, Discord and targets before input',{ skip: process.platform !== 'linux' && 'Requires Linux GI/desktop portal' },()=>{
   const helper=path.resolve('src/node/input/portal.py');
   const code=`import importlib.util,sys
 s=importlib.util.spec_from_file_location('input_portal',sys.argv[1]);p=importlib.util.module_from_spec(s);s.loader.exec_module(p)
@@ -378,7 +378,7 @@ print('focus defense verified')`;
   assert.match(execFileSync('/usr/bin/python3',['-B','-c',code,helper],{encoding:'utf8',stdio:['ignore','pipe','pipe']}),/focus defense verified/);
 });
 
-test('AT-SPI snapshot uses focused extents without inner children and distinguishes overlays and focus mismatch',()=>{
+test('AT-SPI snapshot uses focused extents without inner children and distinguishes overlays and focus mismatch',{ skip: process.platform !== 'linux' && 'Requires Linux GI/desktop portal' },()=>{
   const helper=path.resolve('src/node/input/focus.py');
   const code=`import importlib.util,sys
 s=importlib.util.spec_from_file_location('bit_focus',sys.argv[1]);p=importlib.util.module_from_spec(s);s.loader.exec_module(p)
@@ -462,7 +462,7 @@ test('focused extents evidence reaches cards; refusal messages distinguish acces
   assert.match(card.description,/focused window extents; inner accessible hit unavailable/);assert.match(card.description,/Focused: Obsidian/);
 });
 
-test('portal Super exception is exact and does not bypass subsequent Discord or focus checks',()=>{
+test('portal Super exception is exact and does not bypass subsequent Discord or focus checks',{ skip: process.platform !== 'linux' && 'Requires Linux GI/desktop portal' },()=>{
   const helper=path.resolve('src/node/input/portal.py');
   const code=`import importlib.util,sys
 s=importlib.util.spec_from_file_location('input_portal',sys.argv[1]);p=importlib.util.module_from_spec(s);s.loader.exec_module(p)
@@ -486,7 +486,7 @@ print('Super and refusals verified')`;
   assert.match(execFileSync('/usr/bin/python3',['-B','-c',code,helper],{encoding:'utf8',stdio:['ignore','pipe','pipe']}),/Super and refusals verified/);
 });
 
-test('Shell editable focus is observed from states, not inferred from a preceding Super',()=>{
+test('Shell editable focus is observed from states, not inferred from a preceding Super',{ skip: process.platform !== 'linux' && 'Requires Linux GI/desktop portal' },()=>{
   const helper=path.resolve('src/node/input/focus.py');
   const code=`import importlib.util,sys
 s=importlib.util.spec_from_file_location('bit_focus',sys.argv[1]);p=importlib.util.module_from_spec(s);s.loader.exec_module(p)
@@ -622,7 +622,7 @@ test('focus_search is a separately approved bounded action; entry identity chang
   assert.equal(b.calls.filter(c=>c.method==='input_action').length,0);release(true);await pending;assert.equal(b.calls.filter(c=>c.method==='input_action').length,1);
 });
 
-test('Python focus_search finds only the unique Overview entry and binds it again before grabbing focus',()=>{
+test('Python focus_search finds only the unique Overview entry and binds it again before grabbing focus',{ skip: process.platform !== 'linux' && 'Requires Linux GI/desktop portal' },()=>{
   const code=`import importlib.util,sys
 s=importlib.util.spec_from_file_location('focus',sys.argv[1]);p=importlib.util.module_from_spec(s);s.loader.exec_module(p)
 class State:
@@ -668,7 +668,7 @@ print('search focus verified')`;
   assert.match(execFileSync('/usr/bin/python3',['-B','-c',code,path.resolve('src/node/input/focus.py')],{encoding:'utf8'}),/search focus verified/);
 });
 
-test('installed desktop resolver rejects commands, ambiguous entries, blocked apps and changed approval fingerprints',()=>{
+test('installed desktop resolver rejects commands, ambiguous entries, blocked apps and changed approval fingerprints',{ skip: process.platform !== 'linux' && 'Requires Linux GI/desktop portal' },()=>{
   const helper=path.resolve('src/node/input/apps.py');
   const code=`import importlib.util,sys,tempfile,pathlib
 s=importlib.util.spec_from_file_location('bit_apps',sys.argv[1]);p=importlib.util.module_from_spec(s);s.loader.exec_module(p)
@@ -705,7 +705,7 @@ test('failed type/key propagates none, partial and all confirmed delivery into t
   }
 });
 
-test('resident helper reports acknowledged character/key counts when failure occurs midway',()=>{
+test('resident helper reports acknowledged character/key counts when failure occurs midway',{ skip: process.platform !== 'linux' && 'Requires Linux GI/desktop portal' },()=>{
   const helper=path.resolve('src/node/input/portal.py');
   const code=`import importlib.util,sys
 s=importlib.util.spec_from_file_location('input_portal',sys.argv[1]);p=importlib.util.module_from_spec(s);s.loader.exec_module(p)

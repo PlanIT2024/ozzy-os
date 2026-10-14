@@ -18,7 +18,7 @@ import { ApprovalRelay } from '../src/brain/discord.js';
 import { machinesText } from '../src/brain/discord.js';
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(fn) { for (let i = 0; i < 300; i++) { if (fn()) return; await pause(10); } throw new Error('Condition timed out'); }
-function fixture(t) { const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bit-phase2-')); t.after(() => fs.rmSync(root, { recursive: true, force: true })); return root; }
+function fixture(t) { const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bit-phase2-'))); t.after(() => fs.rmSync(root, { recursive: true, force: true })); return root; }
 function ciphers() {
   const brain = sodium.crypto_kx_keypair(), node = sodium.crypto_kx_keypair();
   return { brain, node, client: new Cipher({ role: 'node', name: 'test-node', key: node, peerKey: brain.publicKey }), server: new Cipher({ role: 'brain', name: 'TEST-NODE', key: brain, peerKey: node.publicKey }) };

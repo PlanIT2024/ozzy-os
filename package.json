@@ -12,7 +12,10 @@
     "service:install": "node scripts/services.js install",
     "service:status": "node scripts/services.js status",
     "service:logs": "node scripts/services.js logs",
-    "service:uninstall": "node scripts/services.js uninstall"
+    "service:uninstall": "node scripts/services.js uninstall",
+    "agent:enable": "node scripts/agent.js enable",
+    "agent:disable": "node scripts/agent.js disable",
+    "agent:try": "node scripts/agent.js try"
   },
   "keywords": [],
   "author": "",

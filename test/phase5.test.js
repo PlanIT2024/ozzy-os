@@ -100,7 +100,7 @@ test('/screen is owner-only, per conversation; /machines reflects capability and
   const handler=client.listeners('interactionCreate')[0];await handler(interaction('screen','on','other'));assert.equal(screens.active('A'),null);await handler(interaction('screen','on'));assert.ok(screens.active('A'));assert.equal(screens.active('B'),null);await handler(interaction('budget'));assert.match(response,/Screens today: 0\/40/);await handler(interaction('screen','off'));assert.equal(screens.active('A'),null);
   assert.ok(commands().find(c=>c.name==='screen'));assert.match(await machinesText({list:hub.list,request:async()=>({uptime:1})}),/screen available/);assert.ok(!(await machinesText({list:()=>[{machine:'OZZY-AI',online:true,capabilities:['status']}],request:async()=>({uptime:1})})).includes('screen'));
 });
-test('portal URI image file is unlinked immediately, including oversize failure; notification uses portal API',t=>{
+test('portal URI image file is unlinked immediately, including oversize failure; notification uses portal API',{ skip: process.platform !== 'linux' && 'Requires Linux GI/desktop portal' },t=>{
   const root=fixture(t),file=path.join(root,'portal.png'),helper=path.resolve('src/node/screen/portal.py');fs.writeFileSync(file,Buffer.from('89504e470d0a1a0a0000','hex'));
   const code=`import importlib.util,sys,os\ns=importlib.util.spec_from_file_location('portal',sys.argv[1]);p=importlib.util.module_from_spec(s);s.loader.exec_module(p)\nf=sys.argv[2];data=p.consume_uri('file://'+f);assert not os.path.exists(f);assert data.startswith(b'\\x89PNG')\nopen(f,'wb').write(b'\\x89PNG\\r\\n\\x1a\\n1234');p.MAX_RAW=1\ntry:p.consume_uri('file://'+f);assert False\nexcept RuntimeError:assert not os.path.exists(f)\ncalls=[];p.call=lambda *a,**k:calls.append(a);p.notify(None);assert calls[0][3]=='org.freedesktop.portal.Notification';print('cleanup and notification verified')`;
   assert.match(execFileSync('/usr/bin/python3',['-B','-c',code,helper,file],{encoding:'utf8'}),/verified/);assert.ok(!fs.existsSync(file));
@@ -113,7 +113,7 @@ test('Runner screenshot turns disable SDK persistence and history, do not save e
 });
 test('production Sharp loader configures native memory threshold before import and disables file cache',()=>{
   const module=new URL('../src/node/screen/sharp.js',import.meta.url).href;
-  const output=execFileSync('/usr/bin/node',['--input-type=module','-e',`const {default:sharp}=await import(${JSON.stringify(module)});console.log(JSON.stringify({threshold:process.env.VIPS_DISC_THRESHOLD,files:sharp.cache().files.max}));`],{encoding:'utf8'});
+  const output=execFileSync(process.execPath,['--input-type=module','-e',`const {default:sharp}=await import(${JSON.stringify(module)});console.log(JSON.stringify({threshold:process.env.VIPS_DISC_THRESHOLD,files:sharp.cache().files.max}));`],{encoding:'utf8'});
   assert.deepEqual(JSON.parse(output),{threshold:'1073741824',files:0});
 });
 test('screenshot audit ignores unexpected model input fields even if they contain pixels',async t=>{

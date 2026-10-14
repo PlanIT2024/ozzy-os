@@ -22,7 +22,7 @@ test('capture diagnostics include stage, response, D-Bus failure, helper exit an
   assert.ok(!logs.join('\n').includes(pixels)); assert.ok(!logs.join('\n').includes('A'.repeat(1000)));
 });
 
-test('Python permission routing respects yes/no and lock state; records D-Bus errors and response codes', () => {
+test('Python permission routing respects yes/no and lock state; records D-Bus errors and response codes', { skip: process.platform !== 'linux' && 'Requires Linux GI/desktop portal' }, () => {
   const helper = path.resolve('src/node/screen/portal.py');
   const code = `import importlib.util,sys,json,io,contextlib
 s=importlib.util.spec_from_file_location('portal',sys.argv[1]);p=importlib.util.module_from_spec(s);s.loader.exec_module(p)
