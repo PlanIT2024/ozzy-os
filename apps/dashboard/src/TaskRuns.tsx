@@ -1,0 +1,27 @@
+import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { supabase } from './client';
+import { canStop, machineOptions, runPayload, stopPayload, type Task, type Node, type Run, type Event } from './model';
+export function RunForm({ task, nodes, user, now, submit, busy }: { task: Task; nodes: Node[]; user: string; now: number; busy: boolean; submit: (payload: ReturnType<typeof runPayload>) => Promise<void> }) {
+ const eligible = nodes.filter(n => !machineOptions(n, now).reason);
+ const [machine, setMachine] = useState(''), [executor, setExecutor] = useState(''), [folder, setFolder] = useState(''), [lease, setLease] = useState(20), [prompt, setPrompt] = useState([task.title, task.description].filter(Boolean).join('\n\n').slice(0, 8000));
+ const node = eligible.find(n => n.id === machine) || eligible[0], options = node ? machineOptions(node, now) : null;
+ const exec = options?.executors.includes(executor) ? executor : options?.executors[0] || '', alias = options?.folders.includes(folder) ? folder : options?.folders[0] || '', minutes = options?.leases.includes(lease) ? lease : options?.leases[0] || 20;
+ function send(e: FormEvent) { e.preventDefault(); if (node && options && !options.reason && prompt.trim() && !busy) void submit(runPayload(crypto.randomUUID(), task.id, node.id, exec, alias, prompt, minutes, user)); }
+ return <section><h2>Run on a machine</h2>{options ? <form onSubmit={send}><label>Machine<select value={node.id} onChange={e => setMachine(e.target.value)}>{eligible.map(n => <option key={n.id} value={n.id}>{n.name}</option>)}</select></label><label>Executor<select value={exec} onChange={e => setExecutor(e.target.value)}>{options.executors.map(x => <option key={x}>{x}</option>)}</select></label><label>Folder alias<select value={alias} onChange={e => setFolder(e.target.value)}>{options.folders.map(x => <option key={x}>{x}</option>)}</select></label><label>Lease<select value={minutes} onChange={e => setLease(Number(e.target.value))}>{options.leases.map(x => <option key={x} value={x}>{x} minutes</option>)}</select></label><label>Prompt<textarea rows={6} maxLength={8000} value={prompt} onChange={e => setPrompt(e.target.value)} /></label><span>{prompt.length}/8000</span><button disabled={busy || !prompt.trim()}>Run</button></form> : <><p>No machine is available to run this task.</p>{nodes.map(n => <p key={n.id}>{n.name}: {machineOptions(n, now).reason}</p>)}{!nodes.length && <p>No visible machines.</p>}</>}</section>;
+}
+export function RunList({ runs, nodes, user, busy, stop }: { runs: Run[]; nodes: Node[]; user: string; busy: boolean; stop: (run: Run) => Promise<void> }) {
+ return <section><h2>Runs</h2>{runs.map(r => <article key={r.id}><span className="pill">{r.status}</span><p>{r.executor} · {nodes.find(n => n.id === r.node_id)?.name || 'Unknown machine'} · {r.lease_minutes} min</p>{r.branch && <p>Branch: {r.branch}</p>}{['done', 'failed', 'stopped', 'expired', 'denied'].includes(r.status) && <p className="plain">{r.summary || 'No summary'}</p>}{canStop(r, nodes, user) && <button disabled={busy || r.stop_requested} onClick={() => void stop(r)}>{r.stop_requested ? 'Stopping…' : 'Stop'}</button>}</article>)}{!runs.length && <p>No runs yet.</p>}</section>;
+}
+export function TaskRuns({ task, nodes, user, runs, now, busy, mutate }: { task: Task; nodes: Node[]; user: string; runs: Run[]; now: number; busy: boolean; mutate: (action: () => PromiseLike<{ error: { message: string } | null }>) => Promise<void> }) {
+ const [events, setEvents] = useState<Event[]>([]), [error, setError] = useState('');
+ const log = useRef<HTMLDivElement>(null), follow = useRef(true);
+ useEffect(() => {
+  if (!supabase) return;
+  const client = supabase; let active = true, revision = 0;
+  async function load() { const version = ++revision; const { data, error } = await client.from('task_events').select('*').eq('task_id', task.id).order('created_at').order('id'); if (!active || version !== revision) return; if (error) setError(error.message); else { setEvents(data as Event[]); setError(''); } }
+  const channel = client.channel(`task-log:${user}:${task.id}`).on('postgres_changes', { event: '*', schema: 'public', table: 'task_events', filter: `task_id=eq.${task.id}` }, () => void load()).subscribe(status => { if (status === 'SUBSCRIBED') void load(); if (active && ['CHANNEL_ERROR', 'TIMED_OUT'].includes(status)) setError('Live log disconnected. Close and reopen the task to reconnect.'); });
+  void load(); return () => { active = false; revision++; void client.removeChannel(channel); };
+ }, [task.id, user]);
+ useEffect(() => { if (follow.current && log.current) log.current.scrollTop = log.current.scrollHeight; }, [events]);
+ return <><RunForm {...{ task, nodes, user, now, busy }} submit={payload => mutate(() => supabase!.from('agent_runs').insert(payload))} /><RunList {...{ runs, nodes, user, busy }} stop={run => mutate(() => supabase!.from('agent_runs').update(stopPayload()).eq('id', run.id))} /><section><h2>Live log</h2>{error && <p role="alert">{error}</p>}<div className="live-log" ref={log} onScroll={() => { const el = log.current!; follow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 30; }}>{events.map(e => <p key={e.id}><time>{new Date(e.created_at).toLocaleTimeString()}</time> <strong>{e.kind}</strong> <span className="plain">{e.summary || 'No summary'}</span></p>)}{!events.length && <p>No events yet.</p>}</div></section></>;
+}
