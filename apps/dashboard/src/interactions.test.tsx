@@ -8,6 +8,7 @@ vi.mock('react', async importOriginal => ({ ...await importOriginal<typeof impor
  useEffect: (effect: () => void | (() => void)) => { hooks.effects.push(effect); }
 }));
 vi.mock('./client', () => ({ supabase: db }));
+import { ProjectName } from './App';
 import { Approvals } from './Approvals';
 import { TaskRuns, RunForm, RunList } from './TaskRuns';
 import type { Approval, Node, Task } from './model';
@@ -42,7 +43,7 @@ it('actual command handlers require confirmation and block both decisions while 
 });
 it('actual write and deny handlers send on the first click', async () => {
  vi.useFakeTimers(); vi.setSystemTime(now);
- const write = { ...approval, action_summary: 'Write', action_detail: { kind: 'agent', file_path: 'dispatch-proof.txt' } }, decide = vi.fn(async () => {});
+ const write = { ...approval, action_summary: 'Write', action_detail: { kind: 'agent', tool:'Write', command:'', paths:['dispatch-proof.txt'] } }, decide = vi.fn(async () => {});
  await (buttons(card(write, decide))[0].props.onClick as () => Promise<void>)(); expect(decide).toHaveBeenLastCalledWith(write, 'approved');
  await (buttons(card(write, decide))[1].props.onClick as () => Promise<void>)(); expect(decide).toHaveBeenLastCalledWith(write, 'denied');
 });
@@ -75,4 +76,34 @@ it('stop callback updates only stop_requested on the selected run', async () => 
  const list = elements(tree).find(e => e.type === RunList)!;
  await (list.props.stop as (run: { id: string }) => Promise<void>)({ id: 'r' });
  expect(db.from).toHaveBeenCalledWith('agent_runs'); expect(update).toHaveBeenCalledWith({ stop_requested: true }); expect(eq).toHaveBeenCalledWith('id', 'r');
+});
+
+it('project name initializes from the row and follows realtime row changes', () => {
+ let tree = ProjectName({project:{id:'p',name:'bIT OS',status:'active'}});
+ expect(tree.props.value).toBe('bIT OS');
+ (tree.props.onChange as (e: unknown) => void)({target:{value:'Draft'}});
+ hooks.cursor=0; hooks.effects=[];
+ tree=ProjectName({project:{id:'p',name:'Renamed remotely',status:'active'}});
+ hooks.effects.forEach(effect=>effect()); hooks.cursor=0;
+ tree=ProjectName({project:{id:'p',name:'Renamed remotely',status:'active'}});
+ expect(tree.props.value).toBe('Renamed remotely');
+});
+it('run blocks short prompts both on button and submit', () => {
+ const machine={...node,capabilities:['run_agent'],status:'online',last_seen_at:new Date(now).toISOString(),metadata:{agent:{executors:['codex'],folders:['sandbox'],maxLeaseMinutes:60}}};
+ const submit=vi.fn(async()=>{});
+ const props={task:{id:'t',title:'Test',description:null} as Task,nodes:[machine],user:'owner',now,busy:false,submit};
+ let tree=RunForm(props);
+ expect(buttons(tree)[0].props.disabled).toBe(true);
+ (elements(tree).find(e=>e.type==='form')!.props.onSubmit as (e:unknown)=>void)({preventDefault(){}});
+ expect(submit).not.toHaveBeenCalled();
+ (elements(tree).find(e=>e.type==='textarea')!.props.onChange as (e:unknown)=>void)({target:{value:'0123456789'}});
+ hooks.cursor=0;tree=RunForm(props);expect(buttons(tree)[0].props.disabled).toBe(false);
+});
+
+it('commandExecution detail requires a second click', async () => {
+ vi.useFakeTimers();vi.setSystemTime(now);
+ const a={...approval,action_summary:'item/commandExecution/requestApproval: sleep 120',action_detail:{kind:'agent',tool:'item/commandExecution/requestApproval',command:'sleep 120',paths:[]}};
+ const decide=vi.fn(async()=>{});
+ await (buttons(card(a,decide))[0].props.onClick as ()=>Promise<void>)();expect(decide).not.toHaveBeenCalled();
+ await (buttons(card(a,decide))[0].props.onClick as ()=>Promise<void>)();expect(decide).toHaveBeenCalledWith(a,'approved');
 });

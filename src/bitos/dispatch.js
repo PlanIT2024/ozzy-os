@@ -1,11 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { createMirrorClient } from './client.js';
+import { wireText } from '../node/agent/policy.js';
 import { redact } from './redact.js';
 
-export function createDispatcher({ env = process.env, hub, makeClient = createMirrorClient, now = Date.now, interval = setInterval, log = console.warn } = {}) {
+export function createDispatcher({ env = process.env, hub, makeClient = createMirrorClient, now = Date.now, interval = setInterval, log = console.warn, info = console.info } = {}) {
   if (env.BITOS_DISPATCH !== '1') return { ready: Promise.resolve(), close() {} };
   const settings = { ...env }, owner = settings.BITOS_OWNER_USER_ID;
   const allowed = new Set((settings.BITOS_AGENT_NODES || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean));
+  const disabled = new Set();
   const caps = new Map(), confirmed = new Set(), recovered = new Set(), retries = new Map();
   const started = now(); let subscribedTasks = ''; let db, channel, timer, closed = false, chain = Promise.resolve();
   // Keep query/RPC context without serializing errors, rows, request parameters,
@@ -183,7 +185,12 @@ export function createDispatcher({ env = process.env, hub, makeClient = createMi
   }
   const connect = ({machine}) => serial('node_connected', 'nodes', async () => {
     caps.delete(machine.toLowerCase());
-    const c = await request(machine,'agent.capabilities');
+    let c;
+    try { c = await request(machine,'agent.capabilities'); } catch (error) {
+      if (failures.get(error)?.error?.message !== 'Agent execution is disabled') throw error;
+      if (!disabled.has(machine.toLowerCase())) { disabled.add(machine.toLowerCase()); info('bIT agent execution is disabled (no enabled node policy)'); }
+      return;
+    }
     if (!c || !Array.isArray(c.executors) || !Array.isArray(c.folders) || !c.folders.every(x => typeof x === 'string' && /^[\w-]{1,64}$/.test(x)) || !Number.isInteger(c.maxLeaseMinutes) || !Number.isInteger(c.maxConcurrent)) return;
     const safe = {executors:c.executors.filter(x=>['codex','claude_code'].includes(x)),folders:c.folders,maxLeaseMinutes:c.maxLeaseMinutes,maxConcurrent:c.maxConcurrent};
     caps.set(machine.toLowerCase(),safe);
@@ -196,8 +203,8 @@ export function createDispatcher({ env = process.env, hub, makeClient = createMi
     confirmed.add(r.id);
     if (m.type === 'agent.approval_request' && typeof m.requestId === 'string') {
       const existing = await query('approvals', 'select', db.from('approvals').select('*').eq('task_id',r.task_id));
-      if (!existing.some(a=>a.action_detail?.run_id===r.id && a.action_detail?.request_id===m.requestId)) await approval(r,n,{run_id:r.id,request_id:m.requestId,kind:'agent'},String(redact(m.action || 'Agent permission requested',settings)));
-    } else if (m.type === 'agent.finished' && ['done','failed','stopped','expired'].includes(m.status)) await finish(r,m.status,m.summary,m.branch);
+      if (!existing.some(a=>a.action_detail?.run_id===r.id && a.action_detail?.request_id===m.requestId)) await approval(r,n,...agentApproval(m, r, settings));
+    } else if (m.type === 'agent.finished' && ['done','failed','stopped','expired'].includes(m.status)) await finish(r,m.status,m.reason && !String(m.summary || '').includes(m.reason) ? `${m.reason}: ${m.summary || m.status}` : m.summary,m.branch);
     else if (m.type === 'agent.event') await query('task_events', 'insert', db.from('task_events').insert({client_event_id:randomUUID(),task_id:r.task_id,node_id:n.id,kind:'agent',summary:redact(m.summary,settings),payload:redact(m,settings)}));
   });
   const ready = (async () => {
@@ -209,4 +216,26 @@ export function createDispatcher({ env = process.env, hub, makeClient = createMi
     await serial('scan', 'agent_runs,approvals', scan);
   })().catch(error => { report(error, 'startup', 'agent_runs'); throw error; });
   return {ready,scan:()=>ready.then(()=>serial('scan', 'agent_runs,approvals', scan)),close(){closed=true;retries.clear();clearInterval(timer);hub.off('node_connected',connect);hub.off('agent',message);if(channel) void attempt('unsubscribe', 'agent_runs,approvals', () => db.removeChannel(channel)).catch(error => report(error, 'close', 'agent_runs,approvals'));}};
+}
+
+// Node wireText has already made worktree paths relative. Apply the same
+// credential filtering as task_events, with an explicit command field allowlist.
+function agentApproval(m, run, settings) {
+  let input = m.detail;
+  if (typeof input === 'string') { try { input = JSON.parse(input); } catch { input = { command: input }; } }
+  input = input && typeof input === 'object' ? input : {};
+  const clean = (value, limit = 240) => redact(wireText(String(value).replace(/[a-z]:[\\/][^\s"'<>;,]*/gi, '[path]')), settings, 0, limit);
+  const tool = clean(m.action || 'Agent permission requested');
+  const paths = [];
+  function visit(value, key = '') {
+    if (typeof value === 'string' && /^(path|file_path|filePath|target|destination|paths)$/.test(key)) {
+      const normalized = value.replaceAll('\\', '/');
+      if (!/^(?:\/|~|[a-z]:)/i.test(normalized) && !normalized.split('/').includes('..') && normalized !== '[path]' && paths.length < 10) paths.push(clean(normalized));
+    } else if (Array.isArray(value)) value.forEach(v => visit(v, key));
+    else if (value && typeof value === 'object') Object.entries(value).forEach(([k,v]) => visit(v,k));
+  }
+  visit(input);
+  const command = /bash|commandExecution|shell|command/i.test(tool) && typeof input.command === 'string' ? clean(input.command, 500) : '';
+  const detail = { run_id:run.id, request_id:m.requestId, kind:'agent', executor:clean(m.executor || run.executor), tool, command, paths };
+  return [detail, `${tool}${command || paths.length ? ': ' + (command || paths.join(', ')) : ''}`];
 }

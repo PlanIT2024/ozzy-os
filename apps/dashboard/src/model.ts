@@ -40,9 +40,9 @@ export const tabTitle = (count: number) => count ? `(${count}) bIT OS` : 'bIT OS
 export function approvalAction(a: Approval) {
  const d = a.action_detail || {};
  const detail = d.detail && typeof d.detail === 'object' ? d.detail as Record<string, unknown> : d;
- const action = String(d.action || a.action_summary);
- const command = /command|bash|shell/i.test(action) || typeof detail.command === 'string';
- const path = detail.file_path || detail.path || detail.filePath;
+ const action = String(d.tool || d.action || a.action_summary);
+ const command = /command|bash|shell/i.test(action) || (typeof detail.command === 'string' && !!detail.command);
+ const path = detail.file_path || detail.path || detail.filePath || (Array.isArray(detail.paths) ? detail.paths.join(', ') : null);
  return { command, text: command ? `Run command: ${typeof detail.command === 'string' ? detail.command : action}` : path ? `Write ${String(path)}` : action };
 }
 export function commandClick(command: boolean, armedUntil: number, now: number) { return command && now >= armedUntil ? { decide: false, armedUntil: now + 5000 } : { decide: true, armedUntil: 0 }; }

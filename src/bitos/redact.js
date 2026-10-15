@@ -2,7 +2,7 @@ import { safeText } from '../brain/transcript.js';
 
 // Taint is a permission policy, not a credential detector. Reuse the existing
 // image/encoded-data filter, then exclude content-bearing fields recursively.
-export function redact(value, env = process.env, depth = 0) {
+export function redact(value, env = process.env, depth = 0, maxText = 240) {
   if (depth > 12) return '[omitted]';
   if (Buffer.isBuffer(value) || ArrayBuffer.isView(value)) return '[binary omitted]';
   if (typeof value === 'string') {
@@ -13,7 +13,7 @@ export function redact(value, env = process.env, depth = 0) {
     return text.replace(/(?:export\s+)?\b[A-Za-z_][A-Za-z0-9_]*\s*=\s*[^\n]+/g, '[env omitted]')
       .replace(/\b(?:sk-[\w-]+|gh[pousr]_[\w]+|github_pat_[\w]+|eyJ[\w-]+\.[\w-]+\.[\w-]+)\b/g, '[redacted]')
       .replace(/\b(?:bearer\s+\S+|(?:token|password|secret|api[_ -]?key)\s*[:=]\s*\S+)/gi, '[redacted]')
-      .replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 240);
+      .replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, maxText);
   }
   if (Array.isArray(value)) return value.slice(0, 64).map(v => redact(v, env, depth + 1));
   if (value && typeof value === 'object') {
