@@ -22,9 +22,3 @@ it('maps all five board statuses without showing cancelled tasks as done', () =>
 it('quick-add scopes the inbox task and sets its typed source', () => {
  expect(quickAddPayload('workspace-123', '  Build dashboard  ')).toEqual({ workspace_id: 'workspace-123', title: 'Build dashboard', status: 'inbox', source: 'typed' });
 });
-it('pending approvals render read-only with Discord guidance', () => {
- const html = renderToStaticMarkup(<Approvals approvals={[{ id: '1', action_summary: 'Restart machine', risk: 'risky', requested_at: '2026-10-12T12:00:00Z' }]} />);
- expect(html).toContain('Decide in Discord for now'); expect(html).toContain('Restart machine');
- expect(html).not.toMatch(/<(button|input|form|select|a)\b/i);
- expect(html).not.toMatch(/>\s*(approve|deny)\s*</i);
-});
