@@ -15,7 +15,8 @@
     "service:uninstall": "node scripts/services.js uninstall",
     "agent:enable": "node scripts/agent.js enable",
     "agent:disable": "node scripts/agent.js disable",
-    "agent:try": "node scripts/agent.js try"
+    "agent:try": "node scripts/agent.js try",
+    "bitos": "node scripts/bitos-cli.mjs"
   },
   "keywords": [],
   "author": "",

@@ -20,13 +20,14 @@ export function riskClass(value) {
   return riskClasses.has(value) ? value : ({ high: 'destructive', critical: 'destructive', medium: 'risky', low: 'risky', message: 'message_as_user', cost: 'spend' }[value] || 'risky');
 }
 
-export function startBrainSync({ env = process.env, ...options } = {}) {
+export function startBrainSync({ env = process.env, onSettings, ...options } = {}) {
   // Capture once into private module state; downstream code receives the scrubbed
   // environment. Keep the snapshot for lazy client retries and redaction.
   const captured = Object.freeze({ ...env });
   for (const target of new Set([env, process.env])) {
     for (const key of Object.keys(target)) if (/^(SUPABASE_|BITOS_)/.test(key)) delete target[key];
   }
+  onSettings?.(captured);
   return createSync({ ...options, env: captured });
 }
 

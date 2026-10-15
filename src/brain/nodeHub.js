@@ -18,7 +18,7 @@ export function parseTokens(raw = '') {
   return tokens;
 }
 export function validCapabilities(values) {
-  return Array.isArray(values) && values.length >= 1 && values.length <= 3 && values[0] === 'status' && (values.length === 1 || values[1] === 'screen') && (values.length < 3 || values[2] === 'input');
+  return Array.isArray(values) && values[0] === 'status' && values.length <= 4 && new Set(values).size === values.length && values.every(v => ['status','screen','input','run_agent'].includes(v)) && (!values.includes('input') || values.includes('screen'));
 }
 export class NodeHub extends EventEmitter {
   constructor({ sync = noSync, port = Number(process.env.NODE_HUB_PORT || 8787), host = process.env.NODE_HUB_BIND || '127.0.0.1', tokens = parseTokens(process.env.NODE_TOKENS), key = loadKey(process.env.BRAIN_KEY_FILE || path.join(ROOT, 'data/keys/brain.json')), trustedKeys = nodeKeys(process.env.NODE_KEYS), relayURL = process.env.RELAY_URL, relayToken = process.env.BRAIN_RELAY_TOKEN || process.env.RELAY_TOKEN, timeout = 10000, stale = 90000, log = console.log } = {}) {
@@ -93,6 +93,8 @@ export class NodeHub extends EventEmitter {
     } else if (m.type === 'capabilities') {
       if (!validCapabilities(m.capabilities)) throw new Error('Invalid capabilities');
       n.capabilities = m.capabilities; this.log(`node ${n.machine} capabilities: ${m.capabilities.join(', ')}`);
+    } else if (['agent.event','agent.approval_request','agent.finished'].includes(m.type)) {
+      this.emit('agent', { machine: n.machine, message: m });
     } else if (m.type === 'control_closed') {
       if (typeof m.grantId !== 'string' || m.grantId.length > 80 || typeof m.reason !== 'string' || m.reason.length > 100) throw new Error('Invalid control closure');
       this.emit('control_closed', { machine: n.machine, grantId: m.grantId, reason: m.reason,delivery:validDelivery(m.delivery)?m.delivery:undefined });
@@ -101,6 +103,7 @@ export class NodeHub extends EventEmitter {
       if (p && p.peer === peer) { this.pending.delete(m.id); clearTimeout(p.timer); if (m.ok === true) p.resolve(m.result); else p.reject(Object.assign(new Error(String(m.error || 'Node request failed')),{delivery:validDelivery(m.delivery)?m.delivery:undefined,launchFailure:m.launchFailure===true})); }
     } else if (m.type !== 'heartbeat') throw new Error('Invalid application message');
     n.lastSeen = Date.now();
+    if (m.type === 'hello' || m.type === 'capabilities') this.emit('node_connected', { machine: n.machine });
     this.sync.nodeSeen({ ...n, identity: id, connected: m.type === 'hello', capabilitiesChanged: m.type === 'capabilities' });
   }
   disconnect(id, connection) {
@@ -114,7 +117,7 @@ export class NodeHub extends EventEmitter {
   request(machine, method, params = {}) {
     let n; try { n = this.nodes.get(canonical(machine)); } catch { return Promise.reject(new Error('Invalid machine name')); }
     if (!n?.online || !n.peer || Date.now() - n.lastSeen > this.stale) return Promise.reject(new Error(`Machine ${machine} is offline`));
-    if (!['status','screen','input_start','input_action','input_focus','input_resolve_app','input_stop'].includes(method)) return Promise.reject(new Error('Unsupported method'));
+    if (!['status','screen','input_start','input_action','input_focus','input_resolve_app','input_stop','agent.capabilities','agent.run','agent.decide','agent.stop'].includes(method)) return Promise.reject(new Error('Unsupported method'));
     if (['input_start','input_action','input_focus','input_resolve_app'].includes(method) && !n.capabilities?.includes('input')) return Promise.reject(new Error('Machine has no input capability'));
     if (method === 'screen' && !n.capabilities?.includes('screen')) return Promise.reject(new Error('Machine has no screen capability'));
     return new Promise((resolve, reject) => {
