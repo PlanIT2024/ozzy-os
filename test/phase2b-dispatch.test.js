@@ -8,8 +8,8 @@ function fixture(options={}) {
  const callbacks=[], subscriptions=[], logs=[], ticks=[];let reads=0, fault=options.fault;
  const db={from(table){let filters=[],op='select',payload;const q={select(){return q;},eq(k,v){filters.push(r=>r[k]===v);return q;},in(k,v){filters.push(r=>v.includes(r[k]));return q;},update(v){op='update';payload=v;return q;},insert(v){op='insert';payload=v;return q;},then(resolve,reject){reads++;try{const failure=fault?.({table,op,payload});if(failure){if(failure.thrown)throw failure.thrown;return Promise.resolve({data:null,error:failure}).then(resolve,reject);}let rows=tables[table].filter(r=>filters.every(f=>f(r)));if(op==='update')rows.forEach(r=>Object.assign(r,structuredClone(payload)));if(op==='insert'){const r={status:'pending',...structuredClone(payload)};tables[table].push(r);rows=[r];}return Promise.resolve({data:structuredClone(rows)}).then(resolve,reject);}catch(e){return Promise.reject(e).then(resolve,reject);}}};return q;},channel(){const c={on(_a,_b,fn){callbacks.push(fn);return c;},subscribe(fn){subscriptions.push(fn);return c;}};return c;},removeChannel(){}};
  const hub=new EventEmitter(),calls=[];hub.list=()=>[{machine:tables.nodes[0].name,online:true}];hub.request=async(machine,method,params)=>{calls.push({method,params});if(method==='agent.capabilities')return {executors:['codex'],folders:['sandbox'],maxLeaseMinutes:30,maxConcurrent:2};return {};};
- const d=createDispatcher({env:{BITOS_DISPATCH:options.off?'0':'1',BITOS_OWNER_USER_ID:'owner',BITOS_AGENT_NODES:options.allow??'MACBOOK',SUPABASE_SERVICE_ROLE_KEY:'fake-service-role-value'},hub,makeClient:async()=>{if(options.clientError)throw options.clientError;return db;},now:()=>time,interval:fn=>{ticks.push(fn);return {unref(){}};},log:line=>logs.push(line)});
- return {d,tables,hub,calls,callbacks,subscriptions,logs,ticks,setFault(fn){fault=fn;},get reads(){return reads;},advance(){time+=120001;},approve(a=tables.approvals[0]){Object.assign(a,{status:'approved',decided_by:'owner',decided_at:new Date(time).toISOString()});}};
+ const d=createDispatcher({env:{BITOS_DISPATCH:options.off?'0':'1',BITOS_OWNER_USER_ID:'owner',BITOS_AGENT_NODES:options.allow??'MACBOOK',SUPABASE_SERVICE_ROLE_KEY:'fake-service-role-value'},hub,makeClient:async()=>{if(options.clientError)throw options.clientError;return db;},now:()=>time,interval:(fn,ms)=>{ticks.push(fn);assert.equal(ms,5000);return {unref(){}};},log:line=>logs.push(line)});
+ return {d,tables,hub,calls,callbacks,subscriptions,logs,ticks,setFault(fn){fault=fn;},get reads(){return reads;},advance(ms=120001){time+=ms;},approve(a=tables.approvals[0]){Object.assign(a,{status:'approved',decided_by:'owner',decided_at:new Date(time).toISOString()});}};
 }
 test('flag off performs zero reads and subscriptions',async()=>{const f=fixture({off:true});await f.d.ready;assert.equal(f.reads,0);assert.equal(f.callbacks.length,0);});
 for(const [label,options] of Object.entries({unlisted:{allow:''},'OZZY-AI default':{name:'OZZY-AI',allow:''},alias:{run:{folder_alias:'elsewhere'}},executor:{run:{executor:'cowork'}},lease:{run:{lease_minutes:31}}}))test(`denies ${label}`,async()=>{const f=fixture(options);await f.d.ready;assert.equal(f.tables.agent_runs[0].status,'denied');f.d.close();});
@@ -77,4 +77,69 @@ test('Realtime errors include subscription context and redacted diagnostics',asy
  const f=fixture();await f.d.ready;f.subscriptions[0]('CHANNEL_ERROR',dbError);
  assert.deepEqual(diagnostic(f.logs[0]),{operation:'subscribe',table:'agent_runs,approvals',code:'42501',message:'Permission denied',hint:'Check grants'});
  f.subscriptions[0]('TIMED_OUT');assert.equal(diagnostic(f.logs[1]).message,'TIMED_OUT');f.d.close();
+});
+
+async function offlineFixture(method) {
+ const f=fixture();await f.d.ready;f.approve();
+ if(method!=='agent.run') await f.d.scan();
+ if(method==='agent.decide') {
+  f.hub.emit('agent',{machine:'MACBOOK',message:{type:'agent.approval_request',runId:'r',requestId:'q',action:'tool'}});
+  await f.d.scan();f.approve(f.tables.approvals[1]);
+ }
+ if(method==='agent.stop') f.tables.agent_runs[0].stop_requested=true;
+ let online=false,attempts=0,deliveries=0;
+ const request=f.hub.request;
+ f.hub.request=async(machine,rpc,params)=>{
+  if(rpc===method){attempts++;if(!online)throw new Error(`Machine ${machine} is offline`);deliveries++;}
+  return request(machine,rpc,params);
+ };
+ return Object.assign(f,{online(){online=true;},getAttempts:()=>attempts,getDeliveries:()=>deliveries});
+}
+for(const method of ['agent.run','agent.decide','agent.stop']) {
+ test(`${method}: node returns within retry window, no duplicate dispatch`,async()=>{
+  const f=await offlineFixture(method);await f.d.scan();
+  const state=method==='agent.run'?'dispatched':'running';assert.equal(f.tables.agent_runs[0].status,state);
+  assert.equal(f.getAttempts(),1);assert.equal(f.logs.length,1);assert.match(f.logs[0],/retrying every 5 s for up to 90 s/);
+  f.advance(4999);await f.d.scan();assert.equal(f.getAttempts(),1);
+  f.advance(1);await f.d.scan();assert.equal(f.getAttempts(),2);assert.equal(f.logs.length,1);
+  f.online();await f.d.scan();assert.equal(f.getDeliveries(),0);
+  f.advance(5000);await f.d.scan();assert.equal(f.getDeliveries(),1);assert.equal(f.tables.agent_runs[0].status,'running');
+  if(method==='agent.stop')f.hub.emit('agent',{machine:'MACBOOK',message:{type:'agent.finished',runId:'r',status:'stopped',summary:'Stopped'}});
+  await f.d.scan();await f.d.scan();assert.equal(f.getDeliveries(),1);assert.equal(f.logs.length,1);
+  if(method==='agent.run')assert.equal(f.calls.filter(c=>c.method==='agent.run').length,1);
+  f.d.close();
+ });
+ test(`${method}: node never returns, fails after 90 seconds with one window log`,async()=>{
+  const f=await offlineFixture(method);await f.d.scan();
+  for(let elapsed=5000;elapsed<90000;elapsed+=5000){f.advance(5000);await f.d.scan();assert.notEqual(f.tables.agent_runs[0].status,'failed');}
+  assert.equal(f.getAttempts(),18);assert.equal(f.logs.length,1);
+  f.advance(5000);await f.d.scan();assert.equal(f.tables.agent_runs[0].status,'failed');assert.equal(f.tables.agent_runs[0].summary,'node offline for 90 s');
+  f.online();await f.d.scan();assert.equal(f.getDeliveries(),0);assert.equal(f.logs.length,1);f.d.close();
+ });
+}
+for(const method of ['agent.run','agent.decide'])test(`${method}: expired approval ends retries without sending`,async()=>{
+ const f=await offlineFixture(method);const a=f.tables.approvals.at(-1);a.expires_at=new Date(1000000+7000).toISOString();
+ await f.d.scan();f.advance(5000);await f.d.scan();assert.equal(f.getAttempts(),2);
+ f.advance(2000);f.online();await f.d.scan();assert.equal(f.getDeliveries(),0);assert.equal(f.tables.agent_runs[0].status,'failed');assert.equal(f.tables.agent_runs[0].summary,'Approval expired while node offline');f.d.close();
+});
+test('disconnect during RPC also opens a single retry window',async()=>{
+ const f=fixture();await f.d.ready;f.approve();f.hub.request=async()=>{throw new Error('Machine disconnected');};
+ await f.d.scan();f.advance(5000);await f.d.scan();assert.equal(f.tables.agent_runs[0].status,'dispatched');assert.equal(f.logs.length,1);f.d.close();
+});
+test('non-offline dispatch failure still fails immediately',async()=>{
+ const f=fixture();await f.d.ready;f.approve();f.hub.request=async()=>{throw new Error('Agent rejected request');};
+ await f.d.scan();assert.equal(f.tables.agent_runs[0].status,'failed');assert.equal(f.tables.agent_runs[0].summary,'Node dispatch failed');assert.equal(diagnostic(f.logs[0]).operation,'agent.run');f.d.close();
+});
+
+test('owner stop supersedes a pending run dispatch without cancelling its offline stop retries',async()=>{
+ const f=await offlineFixture('agent.run');await f.d.scan();f.tables.agent_runs[0].stop_requested=true;
+ const request=f.hub.request;let stops=0;
+ f.hub.request=async(machine,method,params)=>{if(method==='agent.stop'){stops++;throw new Error(`Machine ${machine} is offline`);}return request(machine,method,params);};
+ await f.d.scan();assert.equal(f.tables.agent_runs[0].status,'dispatched');assert.equal(stops,1);
+ f.advance(5000);await f.d.scan();assert.equal(stops,2);assert.equal(f.getAttempts(),1);
+ f.advance(85000);await f.d.scan();assert.equal(f.tables.agent_runs[0].summary,'node offline for 90 s');f.d.close();
+});
+test('relay offline also retries without logging each attempt',async()=>{
+ const f=fixture();await f.d.ready;f.approve();f.hub.request=async()=>{throw new Error('Relay offline');};
+ await f.d.scan();f.advance(5000);await f.d.scan();assert.equal(f.tables.agent_runs[0].status,'dispatched');assert.equal(f.logs.length,1);f.d.close();
 });
