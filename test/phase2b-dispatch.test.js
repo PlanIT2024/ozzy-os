@@ -5,11 +5,11 @@ import { createDispatcher } from '../src/bitos/dispatch.js';
 
 function fixture(options={}) {
  let time=1000000;const tables={nodes:[{id:'n',name:options.name||'MACBOOK',owner_id:'owner'}],tasks:[{id:'t',workspace_id:'ws'}],workspace_members:[{workspace_id:'ws',user_id:'owner'}],agent_runs:[{id:'r',task_id:'t',node_id:'n',executor:'codex',folder_alias:'sandbox',prompt:'test',lease_minutes:5,status:'requested',stop_requested:false,...options.run}],approvals:[],task_events:[]};
- const callbacks=[];let reads=0;
- const db={from(table){let filters=[],op='select',payload;const q={select(){return q;},eq(k,v){filters.push(r=>r[k]===v);return q;},in(k,v){filters.push(r=>v.includes(r[k]));return q;},update(v){op='update';payload=v;return q;},insert(v){op='insert';payload=v;return q;},then(resolve,reject){reads++;try{let rows=tables[table].filter(r=>filters.every(f=>f(r)));if(op==='update')rows.forEach(r=>Object.assign(r,structuredClone(payload)));if(op==='insert'){const r={status:'pending',...structuredClone(payload)};tables[table].push(r);rows=[r];}return Promise.resolve({data:structuredClone(rows)}).then(resolve,reject);}catch(e){return Promise.reject(e).then(resolve,reject);}}};return q;},channel(){const c={on(_a,_b,fn){callbacks.push(fn);return c;},subscribe(){return c;}};return c;},removeChannel(){}};
+ const callbacks=[], subscriptions=[], logs=[], ticks=[];let reads=0, fault=options.fault;
+ const db={from(table){let filters=[],op='select',payload;const q={select(){return q;},eq(k,v){filters.push(r=>r[k]===v);return q;},in(k,v){filters.push(r=>v.includes(r[k]));return q;},update(v){op='update';payload=v;return q;},insert(v){op='insert';payload=v;return q;},then(resolve,reject){reads++;try{const failure=fault?.({table,op,payload});if(failure){if(failure.thrown)throw failure.thrown;return Promise.resolve({data:null,error:failure}).then(resolve,reject);}let rows=tables[table].filter(r=>filters.every(f=>f(r)));if(op==='update')rows.forEach(r=>Object.assign(r,structuredClone(payload)));if(op==='insert'){const r={status:'pending',...structuredClone(payload)};tables[table].push(r);rows=[r];}return Promise.resolve({data:structuredClone(rows)}).then(resolve,reject);}catch(e){return Promise.reject(e).then(resolve,reject);}}};return q;},channel(){const c={on(_a,_b,fn){callbacks.push(fn);return c;},subscribe(fn){subscriptions.push(fn);return c;}};return c;},removeChannel(){}};
  const hub=new EventEmitter(),calls=[];hub.list=()=>[{machine:tables.nodes[0].name,online:true}];hub.request=async(machine,method,params)=>{calls.push({method,params});if(method==='agent.capabilities')return {executors:['codex'],folders:['sandbox'],maxLeaseMinutes:30,maxConcurrent:2};return {};};
- const d=createDispatcher({env:{BITOS_DISPATCH:options.off?'0':'1',BITOS_OWNER_USER_ID:'owner',BITOS_AGENT_NODES:options.allow??'MACBOOK'},hub,makeClient:async()=>db,now:()=>time,interval:()=>({unref(){}}),log:()=>{}});
- return {d,tables,hub,calls,callbacks,get reads(){return reads;},advance(){time+=120001;},approve(a=tables.approvals[0]){Object.assign(a,{status:'approved',decided_by:'owner',decided_at:new Date(time).toISOString()});}};
+ const d=createDispatcher({env:{BITOS_DISPATCH:options.off?'0':'1',BITOS_OWNER_USER_ID:'owner',BITOS_AGENT_NODES:options.allow??'MACBOOK',SUPABASE_SERVICE_ROLE_KEY:'fake-service-role-value'},hub,makeClient:async()=>{if(options.clientError)throw options.clientError;return db;},now:()=>time,interval:fn=>{ticks.push(fn);return {unref(){}};},log:line=>logs.push(line)});
+ return {d,tables,hub,calls,callbacks,subscriptions,logs,ticks,setFault(fn){fault=fn;},get reads(){return reads;},advance(){time+=120001;},approve(a=tables.approvals[0]){Object.assign(a,{status:'approved',decided_by:'owner',decided_at:new Date(time).toISOString()});}};
 }
 test('flag off performs zero reads and subscriptions',async()=>{const f=fixture({off:true});await f.d.ready;assert.equal(f.reads,0);assert.equal(f.callbacks.length,0);});
 for(const [label,options] of Object.entries({unlisted:{allow:''},'OZZY-AI default':{name:'OZZY-AI',allow:''},alias:{run:{folder_alias:'elsewhere'}},executor:{run:{executor:'cowork'}},lease:{run:{lease_minutes:31}}}))test(`denies ${label}`,async()=>{const f=fixture(options);await f.d.ready;assert.equal(f.tables.agent_runs[0].status,'denied');f.d.close();});
@@ -22,3 +22,59 @@ test('nested denied and expired approvals send deny',async()=>{
 });
 test('node confirmation prevents restart cleanup and wrong node cannot finish',async()=>{const f=fixture({run:{status:'running'}});await f.d.ready;f.hub.emit('agent',{machine:'OTHER',message:{type:'agent.finished',runId:'r',status:'done'}});f.hub.emit('agent',{machine:'MACBOOK',message:{type:'agent.event',runId:'r',summary:'alive'}});await f.d.scan();f.advance();await f.d.scan();assert.equal(f.tables.agent_runs[0].status,'running');f.d.close();});
 for(const status of ['failed','stopped','expired'])test(`finished ${status} updates task`,async()=>{const f=fixture({run:{status:'running'}});await f.d.ready;f.hub.emit('agent',{machine:'MACBOOK',message:{type:'agent.finished',runId:'r',status,summary:status}});await f.d.scan();assert.equal(f.tables.tasks[0].status,status==='failed'?'waiting_on_you':'cancelled');f.d.close();});
+
+function diagnostic(line) {
+ assert.ok(line.startsWith('bIT dispatcher failure '));
+ return JSON.parse(line.slice('bIT dispatcher failure '.length));
+}
+const dbError = {code:'42501',message:'Permission denied',hint:'Check grants',details:'PRIVATE ROW CONTENTS'};
+test('startup query failure preserves Supabase diagnostics and table',async()=>{
+ const f=fixture({fault:({table})=>table==='agent_runs'?dbError:null});
+ await assert.rejects(f.d.ready);
+ assert.deepEqual(f.logs.map(diagnostic),[{operation:'select',table:'agent_runs',code:'42501',message:'Permission denied',hint:'Check grants'}]);
+ f.d.close();
+});
+test('client initialization failure is reported with operation and nullable table',async()=>{
+ const f=fixture({clientError:Object.assign(new Error('Unavailable'),{code:'CLIENT',hint:'Try later'})});
+ await assert.rejects(f.d.ready);
+ assert.deepEqual(diagnostic(f.logs[0]),{operation:'create_client',table:null,code:'CLIENT',message:'Unavailable',hint:'Try later'});
+ f.d.close();
+});
+test('poll failures preserve context repeatedly, including thrown transport errors',async()=>{
+ const f=fixture();await f.d.ready;
+ f.setFault(({table})=>table==='workspace_members'?dbError:null);
+ for(let i=0;i<2;i++){f.ticks[0]();await f.d.scan();}
+ assert.equal(f.logs.length,4);
+ assert.ok(f.logs.map(diagnostic).every(d=>d.operation==='select'&&d.table==='workspace_members'&&d.code==='42501'&&d.hint==='Check grants'));
+ f.setFault(({table})=>table==='tasks'?{thrown:Object.assign(new Error('Fetch failed'),{code:'NETWORK',hint:'Check connection'})}:null);
+ await f.d.scan();assert.equal(diagnostic(f.logs.at(-1)).code,'NETWORK');f.d.close();
+});
+test('per-run insert errors redact keys and prompt text from message/hint and omit row details',async()=>{
+ const prompt='Private instruction unique to this run';
+ const f=fixture({run:{prompt},fault:({table,op})=>table==='approvals'&&op==='insert'?{...dbError,message:`Insert rejected: ${prompt} fake-service-role-value`,hint:`Review ${prompt} fake-service-role-value`,details:prompt}:null});
+ await f.d.ready;assert.equal(f.logs.length,1);
+ const d=diagnostic(f.logs[0]);assert.equal(d.operation,'insert');assert.equal(d.table,'approvals');assert.equal(d.code,'42501');
+ for(const text of [prompt,'fake-service-role-value','PRIVATE ROW CONTENTS'])assert.ok(!f.logs[0].includes(text));
+ assert.match(d.message,/\[prompt omitted\]/);assert.match(d.hint,/\[redacted\]/);f.d.close();
+});
+test('approval processing, dispatch catch and event persistence failures retain query context',async()=>{
+ const f=fixture();await f.d.ready;f.approve();
+ f.setFault(({table,op})=>table==='agent_runs'&&op==='update'?dbError:null);
+ await f.d.scan();assert.equal(diagnostic(f.logs.at(-1)).table,'agent_runs');assert.equal(diagnostic(f.logs.at(-1)).operation,'update');
+ f.setFault(({table,op})=>table==='tasks'&&op==='update'?dbError:null);
+ await f.d.scan();assert.ok(f.logs.map(diagnostic).some(d=>d.table==='tasks'&&d.operation==='update'&&d.hint==='Check grants'));
+ f.tables.agent_runs[0].status='running';f.setFault(({table})=>table==='task_events'?dbError:null);
+ f.hub.emit('agent',{machine:'MACBOOK',message:{type:'agent.event',runId:'r',summary:'progress'}});
+ await f.d.scan();assert.equal(diagnostic(f.logs.at(-1)).table,'task_events');assert.equal(diagnostic(f.logs.at(-1)).operation,'insert');f.d.close();
+});
+test('RPC failures report method and node table without request parameters',async()=>{
+ const prompt='Private instruction unique to RPC';const f=fixture({run:{prompt}});await f.d.ready;f.approve();
+ f.hub.request=async()=>{throw new Error(`Node rejected ${prompt} fake-service-role-value`);};
+ await f.d.scan();const d=diagnostic(f.logs[0]);assert.equal(d.operation,'agent.run');assert.equal(d.table,'nodes');assert.equal(d.code,null);assert.equal(d.hint,null);
+ assert.ok(!f.logs[0].includes(prompt));assert.ok(!f.logs[0].includes('fake-service-role-value'));f.d.close();
+});
+test('Realtime errors include subscription context and redacted diagnostics',async()=>{
+ const f=fixture();await f.d.ready;f.subscriptions[0]('CHANNEL_ERROR',dbError);
+ assert.deepEqual(diagnostic(f.logs[0]),{operation:'subscribe',table:'agent_runs,approvals',code:'42501',message:'Permission denied',hint:'Check grants'});
+ f.subscriptions[0]('TIMED_OUT');assert.equal(diagnostic(f.logs[1]).message,'TIMED_OUT');f.d.close();
+});

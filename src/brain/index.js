@@ -30,7 +30,8 @@ export async function runBrain({ root = ROOT, env = process.env, runtime = proce
     const budget = makeBudget();
     hub = makeHub({ sync }); await hub.ready;
     dispatch = createDispatcher({ env: dispatchSettings, hub });
-    void dispatch.ready.catch(() => console.warn("bIT dispatcher startup failed"));
+    // The dispatcher reports startup errors with redacted operation context.
+    void dispatch.ready.catch(() => {});
     growth = makeGrowth({ root, notify: text => discord?.notifyGrowth(text) });
     reminders = makeReminders({ root, timezone: env.TZ || 'America/New_York', deliver: (reminder, context) => discord.deliverReminder(reminder, context) });
     scheduler = makeScheduler({ root, timezone: env.TZ || 'America/New_York', execute: (job, context) => discord.runScheduled(job, context) });

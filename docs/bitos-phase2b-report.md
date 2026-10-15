@@ -85,3 +85,9 @@ Crash behavior fails closed: a crash between claiming awaiting_approval and inse
    ```
 
    Confirm stopped (or already finished), task cancelled for stopped, and no new execution after expiry/denial. These commands are instructions for the later live test; none were executed during Phase 2b implementation.
+
+## Dispatcher failure diagnostics follow-up
+
+Dispatcher failures now emit a structured, redacted record with operation, table, and Supabase code/message/hint. Database errors retain their original fields through query wrappers; node RPCs identify their method and the nodes table. Startup, polling, per-run/per-approval processing, dispatch failures, agent events, Realtime errors and unsubscribe rejections use the same reporter. Non-database failures carry null code/hint when unavailable; client initialization has a null table. No rows, request parameters, stacks or Supabase details are serialized. Known run prompts and their approval previews are removed from diagnostic strings before the existing redact() removes credentials. Brain startup no longer adds a second generic error message.
+
+Validation: `npm test` passed 212 tests, zero failures or skips. Seven new fake-client regression tests cover startup/client errors, repeated polling and thrown transport errors, credential/prompt redaction, per-run/approval/event persistence failures, RPC failures, and Realtime error callbacks. No live service was restarted during this change.
