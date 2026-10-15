@@ -40,5 +40,8 @@
   "private": true,
   "engines": {
     "node": ">=22"
+  },
+  "overrides": {
+    "@modelcontextprotocol/sdk": "1.31.0"
   }
 }
