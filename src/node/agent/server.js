@@ -16,10 +16,11 @@ export async function startCoordinator({ directory = dataDir, socketFile = socke
   fs.writeFileSync(path.join(lock, 'pid'), String(process.pid), { mode: 0o600 });
   try { fs.unlinkSync(socketFile); } catch (e) { if (e.code !== 'ENOENT') throw e; }
   const clients = new Map();
-  const deliver = (m, owner) => { const socket = clients.get(owner); if (socket && !socket.destroyed) socket.write(JSON.stringify(m) + '\n'); };
+  const replay = [];
+  const deliver = (m, owner) => { if (owner === 'node') { replay.push(m); if (replay.length > 2048) replay.shift(); } const socket = clients.get(owner); if (socket && !socket.destroyed) socket.write(JSON.stringify(m) + '\n'); };
   manager.on('message', deliver);
   const server = net.createServer(socket => {
-    const owner = randomUUID(); clients.set(owner, socket);
+    let owner = randomUUID(); clients.set(owner, socket);
     let buffered = 0, nodeClient = false;
     socket.on('data', b => { buffered += b.length; if (buffered > 200000) socket.destroy(); });
     socket.on('error', () => {});
@@ -29,13 +30,14 @@ export async function startCoordinator({ directory = dataDir, socketFile = socke
       try {
         m = JSON.parse(line);
         if (!m || typeof m !== 'object' || !Number.isSafeInteger(m.id)) { socket.destroy(); return; }
-        if (m.method === 'local.connection') { nodeClient = true; manager.connection(owner, m.params?.online === true); return reply({ result: true }); }
+        if (m.method === 'local.connection') { if (!nodeClient) { clients.delete(owner); owner = 'node'; nodeClient = true; clients.set(owner, socket); } manager.connection(owner, m.params?.online === true); for (const event of replay) socket.write(JSON.stringify(event) + '\n'); return reply({ result: true }); }
         if (m.method === 'local.shutdown') { await manager.stopAll(); return reply({ result: true }); }
-        if (m.method === 'local.disable') { await manager.stopAll(); return reply({ result: true }); }
+        if (m.method === 'local.disable') { await manager.stopAll('policy_disabled'); return reply({ result: true }); }
         reply({ result: await manager.request(m.method, m.params, owner) });
       } catch (e) { if (m) reply({ error: e.message }); else socket.destroy(); }
     });
     socket.on('close', () => {
+      if (clients.get(owner) !== socket) return;
       clients.delete(owner);
       if (nodeClient || [...manager.runs.values()].some(r => r.owner === owner)) manager.connection(owner, false, nodeClient);
     });

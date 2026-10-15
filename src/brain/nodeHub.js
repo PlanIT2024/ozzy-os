@@ -23,7 +23,7 @@ export function validCapabilities(values) {
 export class NodeHub extends EventEmitter {
   constructor({ sync = noSync, port = Number(process.env.NODE_HUB_PORT || 8787), host = process.env.NODE_HUB_BIND || '127.0.0.1', tokens = parseTokens(process.env.NODE_TOKENS), key = loadKey(process.env.BRAIN_KEY_FILE || path.join(ROOT, 'data/keys/brain.json')), trustedKeys = nodeKeys(process.env.NODE_KEYS), relayURL = process.env.RELAY_URL, relayToken = process.env.BRAIN_RELAY_TOKEN || process.env.RELAY_TOKEN, timeout = 10000, stale = 90000, log = console.log } = {}) {
     super(); if (!['127.0.0.1', '::1', 'localhost'].includes(host)) throw new Error('Brain hub must bind to loopback only');
-    Object.assign(this, { sync, key, trustedKeys, timeout, stale, log }); this.pending = new Map(); this.handshakes = new Map();
+    Object.assign(this, { sync, key, trustedKeys, timeout, stale, log }); this.agentSequences = new Map(); this.pending = new Map(); this.handshakes = new Map();
     this.failure = new Promise((_, reject) => { this.rejectFailure = reject; }); void this.failure.catch(() => {});
     this.nodes = new Map([...trustedKeys].map(([id, value]) => [id, { machine: value.name, online: false, lastSeen: null }]));
     this.server = new WebSocketServer({ port, host, maxPayload: MAX_MESSAGE, perMessageDeflate: false });
@@ -94,7 +94,15 @@ export class NodeHub extends EventEmitter {
       if (!validCapabilities(m.capabilities)) throw new Error('Invalid capabilities');
       n.capabilities = m.capabilities; this.log(`node ${n.machine} capabilities: ${m.capabilities.join(', ')}`);
     } else if (['agent.event','agent.approval_request','agent.finished'].includes(m.type)) {
-      this.emit('agent', { machine: n.machine, message: m });
+      if (Number.isSafeInteger(m.sequence) && m.sequence > 0 && typeof m.runId === 'string') {
+        const key = `${id}:${m.runId}`;
+        if (m.sequence > (this.agentSequences.get(key) || 0)) {
+          this.emit('agent', { machine: n.machine, message: m });
+          this.agentSequences.set(key, m.sequence);
+          if (this.agentSequences.size > 4096) this.agentSequences.delete(this.agentSequences.keys().next().value);
+        }
+        peer.send({ type: 'agent.ack', runId: m.runId, sequence: m.sequence });
+      } else this.emit('agent', { machine: n.machine, message: m });
     } else if (m.type === 'control_closed') {
       if (typeof m.grantId !== 'string' || m.grantId.length > 80 || typeof m.reason !== 'string' || m.reason.length > 100) throw new Error('Invalid control closure');
       this.emit('control_closed', { machine: n.machine, grantId: m.grantId, reason: m.reason,delivery:validDelivery(m.delivery)?m.delivery:undefined });

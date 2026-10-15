@@ -99,7 +99,7 @@ for (const scenario of ['unknown', 'wrong-key', 'wrong-name']) test(`valid relay
   const config = scenario === 'unknown' ? '' : scenario === 'wrong-name' ? `other:${publicHex(trusted)}` : `test-node:${publicHex(trusted)}`;
   const hub = new NodeHub({ port: 0, key: brainKey, trustedKeys: nodeKeys(config), tokens: new Map(), relayURL: url, relayToken: 'token-brain', log: () => {} }); await hub.ready; t.after(() => hub.close());
   const logs = [], node = startNode({ transport: 'relay', url, token: 'token-test-node', machine: 'test-node', key: scenario === 'wrong-key' ? wrong : trusted, brainKey: brainKey.publicKey, log: m => logs.push(m) }); t.after(() => node.close());
-  const [error] = await once(node, 'fatal'); assert.match(error.message, /key|authentication/i); assert.ok(hub.list().every(n => !n.online)); assert.ok(logs.some(s => s.includes('rejected')));
+  await until(() => logs.some(s => s.includes('E2E unavailable'))); assert.ok(hub.list().every(n => !n.online)); assert.ok(!logs.some(s => s.includes('stopping reason=')));
 });
 
 test('loopback requires both local token and E2E key, rejects public binding', async t => {

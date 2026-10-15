@@ -9,7 +9,7 @@ export class AgentManager extends EventEmitter {
   constructor({ file = policyFile, spawnWorker = (options) => fork(new URL('./worker.js', import.meta.url), [], options), graceMs = 10000, approvalMs = 600000, relayMs = 120000, minuteMs = 60000, pollMs = 1000 } = {}) {
     super(); Object.assign(this, { file, spawnWorker, graceMs, approvalMs, relayMs, minuteMs });
     this.runs = new Map(); this.seen = new Set(); this.closed = false;
-    this.poll = setInterval(() => { if (!readPolicy(this.file).enabled) void this.stopAll(); }, pollMs); this.poll.unref();
+    this.poll = setInterval(() => { if (!readPolicy(this.file).enabled) void this.stopAll('policy_disabled'); }, pollMs); this.poll.unref();
   }
   capabilities() {
     const p = readPolicy(this.file);
@@ -29,7 +29,7 @@ export class AgentManager extends EventEmitter {
     }
     throw new Error('Unsupported agent method');
   }
-  emitRun(run, type, fields) { this.emit('message', { type, runId: run.id, ...fields }, run.owner); }
+  emitRun(run, type, fields) { this.emit('message', { type, runId: run.id, sequence: run.sequence = (run.sequence || 0) + 1, ...fields }, run.owner); }
   run(v, p, owner) {
     const { runId, taskId, executor, folderAlias, prompt, leaseMinutes } = v;
     if (Object.keys(v).some(k => !['runId','taskId','executor','folderAlias','prompt','leaseMinutes'].includes(k))) throw new Error('Unexpected run fields; use folderAlias');
@@ -47,7 +47,7 @@ export class AgentManager extends EventEmitter {
     const run = { id: runId, owner, executor, project, policy: p, branch: `bit/${runId}`, cwd: path.join(project.absolutePath, '.bit-worktrees', runId), approvals: new Map(), deadline: Date.now() + leaseMinutes * this.minuteMs };
     this.seen.add(runId); this.runs.set(runId, run);
     run.finished = new Promise(resolve => { run.resolve = resolve; });
-    run.timer = setTimeout(() => void this.stop(runId, 'expired'), leaseMinutes * this.minuteMs);
+    run.timer = setTimeout(() => void this.stop(runId, 'expired', '', 'lease_expired'), leaseMinutes * this.minuteMs);
     // Reserve before setup; all run requests share this coordinator.
     setImmediate(() => this.start(run, prompt));
     return { runId, branch: run.branch };
@@ -68,8 +68,8 @@ export class AgentManager extends EventEmitter {
       if (!old.split('\n').includes('.bit-worktrees/')) fs.appendFileSync(exclude, '\n.bit-worktrees/\n');
       run.base = git(repo, 'rev-parse', 'HEAD');
       git(repo, 'worktree', 'add', '-b', run.branch, run.cwd, run.base);
-      if (Date.now() >= run.deadline) { void this.stop(run.id, 'expired'); return; }
-      if (!readPolicy(this.file).enabled || run.ending) { void this.stop(run.id); return; }
+      if (Date.now() >= run.deadline) { void this.stop(run.id, 'expired', '', 'lease_expired'); return; }
+      if (!readPolicy(this.file).enabled || run.ending) { void this.stop(run.id, 'stopped', '', 'policy_disabled'); return; }
       const child = run.child = this.spawnWorker({ cwd: run.cwd, env: minimalEnv(), detached: true, stdio: ['ignore','ignore','ignore','ipc'] });
       child.on('message', m => {
         if (run.ending || !m || typeof m !== 'object') return;
@@ -99,7 +99,7 @@ export class AgentManager extends EventEmitter {
     }
     if (run.child?.connected) run.child.send({ type: 'decision', id: m.id, decision, reason }, () => {});
   }
-  async stop(id, status = 'stopped', summary = '') {
+  async stop(id, status = 'stopped', summary = '', reason = status === 'expired' ? 'lease_expired' : status === 'stopped' ? 'user_stop' : undefined) {
     const run = this.runs.get(id); if (!run) return;
     if (run.ending) return run.finished;
     run.ending = true; clearTimeout(run.timer);
@@ -111,18 +111,18 @@ export class AgentManager extends EventEmitter {
     signal('SIGKILL');
     let stat = '';
     try { stat = git(run.cwd, 'diff', '--no-ext-diff', '--no-textconv', '--stat', run.base); const untracked = git(run.cwd, 'ls-files', '--others', '--exclude-standard'); if (untracked) stat += `\nUntracked files:\n${untracked}`; } catch { stat = 'Diff unavailable (worktree setup did not complete)'; }
-    this.emitRun(run, 'agent.finished', { status, branch: run.branch, summary: wireText(`${summary || status}\n${stat || 'No tracked changes'}`, run.cwd) });
+    this.emitRun(run, 'agent.finished', { status, reason, branch: run.branch, summary: wireText(`${reason ? reason + ": " : ""}${summary || status}\n${stat || 'No tracked changes'}`, run.cwd) });
     this.runs.delete(id); run.resolve(); return run.finished;
   }
-  stopAll() { return Promise.all([...this.runs.keys()].map(id => this.stop(id))); }
+  stopAll(reason = 'node_shutdown') { return Promise.all([...this.runs.keys()].map(id => this.stop(id, 'stopped', '', reason))); }
   connection(owner, online, allRuns = true) {
     if (this.closed) return;
     this.lossTimers ??= new Map();
     if (online) { clearTimeout(this.lossTimers.get(owner)); this.lossTimers.delete(owner); }
     else if (!this.lossTimers.has(owner)) this.lossTimers.set(owner, setTimeout(() => {
       this.lossTimers.delete(owner);
-      if (allRuns) void this.stopAll();
-      else for (const r of this.runs.values()) if (r.owner === owner) void this.stop(r.id);
+      if (allRuns) void this.stopAll('relay_loss_2m');
+      else for (const r of this.runs.values()) if (r.owner === owner) void this.stop(r.id, 'stopped', '', 'coordinator_lost');
     }, this.relayMs).unref());
   }
   async close() { this.closed = true; clearInterval(this.poll); for (const t of this.lossTimers?.values() || []) clearTimeout(t); await this.stopAll(); }

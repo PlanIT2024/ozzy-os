@@ -91,7 +91,10 @@ for (const reason of ['expired','stopped','relay-loss','shutdown','disabled']) t
   if (reason === 'shutdown') void f.manager.close();
   if (reason === 'disabled') writePolicy({ enabled: false }, f.file);
   await until(() => f.messages.some(m => m.type === 'agent.finished'));
-  assert.equal(f.messages.find(m => m.type === 'agent.finished').status, reason === 'expired' ? 'expired' : 'stopped');
+  const finished = f.messages.find(m => m.type === 'agent.finished');
+  assert.equal(finished.status, reason === 'expired' ? 'expired' : 'stopped');
+  const expected = { expired: 'lease_expired', stopped: 'user_stop', 'relay-loss': 'relay_loss_2m', shutdown: 'node_shutdown', disabled: 'policy_disabled' }[reason];
+  assert.equal(finished.reason, expected); assert.ok(finished.summary.includes(expected));
   await until(() => { try { process.kill(pid, 0); return false; } catch { return true; } });
   await until(() => { try { process.kill(descendant, 0); return false; } catch { return true; } });
 });
@@ -448,4 +451,99 @@ test('Claude completed text is a message and tool progress is also limited to on
   }, close() {} });
   await claude({ cwd: f.repo, prompt: 'test' }, { queryFn, now: () => 0, event: (summary, kind) => events.push({ summary, kind }) });
   assert.deepEqual(events, [{ summary: 'Claude tool activity', kind: 'progress' }, { summary: 'Complete answer', kind: 'message' }]);
+});
+
+test('node coordinator reconnect cancels the previous socket loss timer', async t => {
+  const f = fixture(t, { relayMs: 150 });
+  const socketFile = path.join(f.root, 'reconnect.sock');
+  const server = await startCoordinator({ directory: f.root, socketFile, manager: f.manager }); t.after(() => server.close());
+  const first = await connect(socketFile);
+  await first.request('local.connection', { online: true });
+  await first.request('agent.run', { runId: 'reconnect', taskId: 'task', executor: 'codex', folderAlias: 'test', prompt: 'wait', leaseMinutes: 5 });
+  first.close(); await pause(30);
+  const second = await connect(socketFile); t.after(() => second.close());
+  await second.request('local.connection', { online: true });
+  await pause(250);
+  assert.ok(f.manager.runs.has('reconnect'), 'brief coordinator disconnect must not stop a run');
+});
+
+test('brief relay loss keeps execution alive, replays completion and deduplicates a lost ACK', async t => {
+  const { startNode } = await import('../src/node/index.js');
+  const { NodeHub } = await import('../src/brain/nodeHub.js');
+  const { SecurePeer, sodium } = await import('../src/transport/crypto.js');
+  const f = fixture(t, { relayMs: 1200 });
+  const brainKey = sodium.crypto_kx_keypair(), key = sodium.crypto_kx_keypair();
+  const delivered = []; let relay, brain, loseAck = true, closed = false;
+  const hub = Object.assign(new EventEmitter(), { nodes: new Map(), agentSequences: new Map(), pending: new Map(), log() {}, sync: { nodeSeen() {} } });
+  hub.on('agent', ({ message }) => delivered.push(message));
+  class Relay extends EventEmitter {
+    constructor() { super(); relay = this; queueMicrotask(() => this.up()); }
+    up() {
+      this.online = true;
+      brain = new SecurePeer({ role: 'brain', name: 'test', key: brainKey, peerKey: key.publicKey, send: frame => {
+        if (this.online) queueMicrotask(() => this.emit('frame', frame));
+      } });
+      const original = brain.send.bind(brain);
+      brain.send = m => { if (m.type === 'agent.ack' && loseAck) return; original(m); };
+      hub.nodes.set('test', { peer: brain, machine: 'test', online: false });
+      brain.on('message', m => NodeHub.prototype.message.call(hub, 'test', brain, m));
+      this.emit('control', { type: 'peer', name: 'brain', online: true });
+    }
+    send(frame) { const current = brain; if (!this.online) throw Error('offline'); queueMicrotask(() => current.receive(frame)); }
+    down() { this.online = false; this.emit('offline'); }
+    close() { this.online = false; }
+  }
+  const agents = Object.assign(new EventEmitter(), { available: () => true, request: (...args) => f.manager.request(...args), connectionState: online => f.manager.connection('local', online), close: () => { closed = true; return f.manager.close(); } });
+  f.manager.on('message', m => agents.emit('message', m));
+  const node = startNode({ transport: 'relay', Relay, token: 'test', machine: 'test', key, brainKey: brainKey.publicKey, log() {}, agents, screen: { available: async () => false, close() {} }, input: Object.assign(new EventEmitter(), { available: async () => false, close() {} }) });
+  t.after(() => node.close());
+  await until(() => hub.nodes.get('test')?.online);
+  await f.run('drop'); await until(() => delivered.some(m => m.kind === 'started'));
+  relay.down(); await pause(50); // 5 seconds scaled against a 120-second loss budget.
+  assert.ok(f.manager.runs.has('drop')); assert.equal(closed, false);
+  await f.manager.stop('drop', 'done', 'Completed during drop');
+  assert.ok(!delivered.some(m => m.type === 'agent.finished'));
+  loseAck = false; relay.up();
+  await until(() => delivered.some(m => m.type === 'agent.finished'));
+  assert.equal(delivered.find(m => m.type === 'agent.finished').status, 'done');
+  relay.down(); relay.up(); await pause(50);
+  assert.equal(delivered.filter(m => m.type === 'agent.finished').length, 1);
+  assert.equal(delivered.filter(m => m.kind === 'started').length, 1);
+  assert.equal(closed, false);
+});
+
+test('E2E handshake timeout retries without node shutdown', async t => {
+  const { startNode } = await import('../src/node/index.js');
+  const { sodium } = await import('../src/transport/crypto.js');
+  let relay, shutdowns = 0, retries = 0;
+  class Relay extends EventEmitter {
+    constructor() { super(); relay = this; this.ws = { terminate: () => { retries++; this.emit('offline'); } }; queueMicrotask(() => this.emit('control', { type: 'peer', name: 'brain', online: true })); }
+    send() {} close() {}
+  }
+  const node = startNode({ transport: 'relay', Relay, handshakeMs: 20, token: 'test', machine: 'test', key: sodium.crypto_kx_keypair(), brainKey: sodium.crypto_kx_keypair().publicKey, log() {}, agents: Object.assign(new EventEmitter(), { available: () => false, connectionState() {}, close() { shutdowns++; } }), screen: { available: async () => false, close() {} }, input: Object.assign(new EventEmitter(), { available: async () => false, close() {} }) });
+  t.after(() => node.close());
+  await until(() => retries === 1); assert.equal(shutdowns, 0); assert.ok(relay);
+});
+
+test('coordinator loss stop identifies its reason', async t => {
+  const f = fixture(t, { relayMs: 30 }); await f.run('coordinator');
+  f.manager.connection('local', false, false);
+  await until(() => f.messages.some(m => m.type === 'agent.finished'));
+  const finished = f.messages.find(m => m.type === 'agent.finished');
+  assert.equal(finished.reason, 'coordinator_lost'); assert.match(finished.summary, /coordinator_lost/);
+});
+
+test('relay close leaves a live retry handle in a real node process', () => {
+  const source = `
+    import { EventEmitter } from 'node:events';
+    import { RelayClient } from './src/transport/relayClient.js';
+    class Socket extends EventEmitter {
+      constructor() { super(); this.readyState = 1; queueMicrotask(() => this.emit('close', 1006, Buffer.from('test drop'))); }
+      ping() {} terminate() {}
+    }
+    const client = new RelayClient({ url: 'ws://127.0.0.1', token: 'test', name: 'test', Socket, log() {} });
+    const check = setTimeout(() => { console.log(client.timer.hasRef() ? 'alive with retry' : 'missing retry'); client.close(); }, 50);
+    check.unref();
+  `;
+  assert.equal(execFileSync(process.execPath, ['--input-type=module', '-e', source], { encoding: 'utf8' }).trim(), 'alive with retry');
 });
