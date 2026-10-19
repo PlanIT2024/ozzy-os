@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { BitPanel } from './BitPanel';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { supabase } from './client';
 import { isPending, type Approval } from './model';
 import '../../../shared/bit-orb/src/bit-orb.js';
@@ -12,6 +13,8 @@ export function Orb({ presence, size = 48 }: { presence: Presence; size?: number
 const words: Record<string,string> = { idle:'Idle',listen:'Listening',think:'Thinking',agent:'Running a task',lease:'Control lease',screen:'Watching screen',approve:'Needs approval',offline:'Offline' };
 export function BitPresence({ approvals, now }: { approvals: Approval[]; now: number }) {
  const [presence,setPresence]=useState<Presence>(offline),[open,setOpen]=useState(false);
+ const trigger = useRef<HTMLButtonElement>(null);
+ const close = useCallback(() => setOpen(false), []);
  useEffect(()=>{
   if(!supabase)return;
   const client=supabase;let active=true,revision=0;
@@ -21,7 +24,7 @@ export function BitPresence({ approvals, now }: { approvals: Approval[]; now: nu
  },[]);
  const stale=!presence.updatedAt||now-Date.parse(presence.updatedAt)>90000;
  const current=stale?{...presence,state:'offline'}:presence;
- return <div className="bit-presence"><button className="orb-button" aria-label="Show bIT presence" aria-expanded={open} onClick={()=>setOpen(!open)}><Orb presence={current}/></button>{open&&<section className="bit-panel" aria-label="bIT presence"><h2>bIT: {words[current.state]}</h2>{stale?<p>Waiting for the brain to reconnect.</p>:<>{current.node&&<p>On {current.node}</p>}{current.lease&&Date.parse(current.lease.endsAt)>now&&<p>Control lease on {current.lease.node}: {Math.ceil((Date.parse(current.lease.endsAt)-now)/1000)}s left</p>}{(current.screenGrants || []).length>0&&<p>Screen access active: {current.screenGrants!.join(', ')}</p>}<p>{current.watching.length?'Watching '+current.watching.join(', '):'No machines being watched'}</p></>}<p>{approvals.filter(a=>isPending(a,now)).length} pending approvals</p>{approvals.filter(a=>isPending(a,now)).map(a=><p key={a.id}>{a.action_summary}</p>)}</section>}</div>;
+ return <div className="bit-presence"><button ref={trigger} type="button" className="orb-button" aria-haspopup="dialog" aria-label="Show bIT presence" aria-expanded={open} onClick={()=>setOpen(!open)}><Orb presence={current}/></button>{open&&<BitPanel anchor={trigger} title={`bIT: ${words[current.state]}`} avatar={<Orb presence={current}/>} onClose={close}>{stale?<p>Waiting for the brain to reconnect.</p>:<>{current.node&&<p>On {current.node}</p>}{current.lease&&Date.parse(current.lease.endsAt)>now&&<p>Control lease on {current.lease.node}: {Math.ceil((Date.parse(current.lease.endsAt)-now)/1000)}s left</p>}{(current.screenGrants || []).length>0&&<p>Screen access active: {current.screenGrants!.join(', ')}</p>}<p>{current.watching.length?'Watching '+current.watching.join(', '):'No machines being watched'}</p></>}<p>{approvals.filter(a=>isPending(a,now)).length} pending approvals</p>{approvals.filter(a=>isPending(a,now)).map(a=><p key={a.id}>{a.action_summary}</p>)}</BitPanel>}</div>;
 }
 export function BitLab() {
  const [state,setState]=useState('idle'),[mood,setMood]=useState('chill'),[reaction,setReaction]=useState<Presence['reaction']>(null),[size,setSize]=useState(284);

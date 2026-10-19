@@ -102,3 +102,7 @@ The outstanding-file review checked 22 files against configured credential value
 The owner authorized pushing the local main commits to trigger the existing Pages Git integration. There is no Wrangler login/deployment step. The exact Pages build settings and private build log were not supplied (the message contained placeholders), so the clean dashboard-root reproduction above is explicitly distinguished from an exact match of the Cloudflare configuration.
 
 After pushing, inspect the Cloudflare Pages check on the new main commit. Only a successful deployment check and a served site establish deployment; a Git push alone is not reported as a successful deploy. The two dashboard-only owner tests above should be run after that deployment succeeds. Chat, screen, and control tests remain deferred.
+
+## Mobile panel regression
+
+The offscreen presence panel was reproduced at 320px and 390px and replaced with a safe-area-aware mobile sheet plus a clamped desktop dialog. See `docs/bit-panel-fix.md` for before/after screenshots, bounds and the automated Chromium/WebKit regression tests. Presence permissions and backend behavior are unchanged by this UI fix.

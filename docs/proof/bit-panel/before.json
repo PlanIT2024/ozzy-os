@@ -1,0 +1,28 @@
+[
+  {
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "bounds": {
+      "x": -208,
+      "y": 198,
+      "width": 280,
+      "height": 213.78125
+    },
+    "clippedLeft": true
+  },
+  {
+    "viewport": {
+      "width": 320,
+      "height": 568
+    },
+    "bounds": {
+      "x": -208,
+      "y": 198,
+      "width": 280,
+      "height": 156.6875
+    },
+    "clippedLeft": true
+  }
+]

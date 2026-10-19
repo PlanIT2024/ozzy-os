@@ -1,0 +1,28 @@
+[
+  {
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "bounds": {
+      "x": 0,
+      "y": 0,
+      "width": 390,
+      "height": 843.984375
+    },
+    "inside": true
+  },
+  {
+    "viewport": {
+      "width": 320,
+      "height": 568
+    },
+    "bounds": {
+      "x": 0,
+      "y": 0,
+      "width": 320,
+      "height": 568
+    },
+    "inside": true
+  }
+]
