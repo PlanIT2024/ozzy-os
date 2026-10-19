@@ -40,3 +40,17 @@ export function computerTools(control) {
     tool('launch_app','Launch an installed desktop app by exact desktop id or unambiguous name. Requires active untainted control/screen grants and owner ✅. Prefer this over keyboard launching. Discord launches are blocked. The node resolves the installed entry before approval and re-checks its fingerprint before launch; afterwards inspect actual reported focus. If the target is not focused, stop and ask Ozzy to bring it forward; do not improvise a raising sequence or retry the launch.',{machine:z.string().min(1).max(64),app:z.string().min(1).max(160)},input=>control.execute({...input,action:'launch_app',target:`Launch ${input.app}`})),
   ] });
 }
+
+export function createExpress(presence, now = Date.now) {
+  let last = -Infinity;
+  return ({ face }) => {
+    if (!['unsure', 'curious', 'celebrate'].includes(face)) throw new Error('Invalid expression');
+    if (now() - last < 10000) return { ignored: true };
+    last = now(); presence?.react(face); return { expressed: face };
+  };
+}
+export function expressTools(express) {
+  return createSdkMcpServer({ name: 'presence', version: '1.0.0', tools: [
+    tool('express', 'Show a true feeling. Use unsure when genuinely uncertain and say so plainly. Cosmetic only.', { face: z.enum(['unsure', 'curious', 'celebrate']) }, async input => ({ content: [{ type: 'text', text: JSON.stringify(express(input)) }] })),
+  ] });
+}

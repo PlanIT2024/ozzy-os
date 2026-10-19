@@ -7,7 +7,8 @@ import { validateSchedule } from './scheduler.js';
 import { proposedContent, reviewDiff } from './reviewDiff.js';
 import { validateSkill } from './skills.js';
 export const BUILTINS = ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Skill', 'WebSearch', 'WebFetch'];
-export const CUSTOM = ['mcp__machines__list_machines', 'mcp__machines__machine_status', 'mcp__reminders__set_reminder', 'mcp__reminders__list_reminders', 'mcp__reminders__cancel_reminder'];
+export const EXPRESS_TOOL = 'mcp__presence__express';
+export const CUSTOM = [EXPRESS_TOOL, 'mcp__machines__list_machines', 'mcp__machines__machine_status', 'mcp__reminders__set_reminder', 'mcp__reminders__list_reminders', 'mcp__reminders__cancel_reminder'];
 const writes = new Set(['Write', 'Edit']);
 const inside = (base, file) => file === base || file.startsWith(base + path.sep);
 export function createPermissions({ sync = noSync, root = ROOT, approve = async () => false, notify = async () => {}, afterWrite = async () => {}, context = '', web, sessionKey = context, resolve, reminders, webAllowed = true, screen, control } = {}) {

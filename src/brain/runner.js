@@ -4,7 +4,7 @@ import path from 'node:path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { ROOT, readJSON, saveJSON, serial } from '../shared.js';
 import { BUILTINS, createPermissions } from './permissions.js';
-import { machineTools, reminderTools, screenshotTools, computerTools } from './tools.js';
+import { machineTools, expressTools, createExpress, reminderTools, screenshotTools, computerTools } from './tools.js';
 import { ScreenGrants, requestedScreenAttachment } from './screens.js';
 import { Reminders } from './reminders.js';
 import { zonedTime } from './scheduler.js';
@@ -55,16 +55,19 @@ export function skillOptions(root = ROOT) {
   };
 }
 export class Runner {
-  constructor({ sync = noSync, hub, budget, root = ROOT, queryFn = query, growth, reminders, screens, controls }) {
+  constructor({ presence, sync = noSync, hub, budget, root = ROOT, queryFn = query, growth, reminders, screens, controls }) {
     Object.assign(this, { sync, hub, budget, root, queryFn, growth });
+    this.presence = presence; this.express = createExpress(presence);
     this.reminders = reminders || new Reminders({ root });
     this.screens = screens || new ScreenGrants({ root, sync });
     this.controls = controls || new ControlGrants({ root, hub, sync, screens: this.screens });
+    for (const g of Object.values(this.controls.state?.grants || {})) if (!g.revokedAt && Date.parse(g.expiresAt) > Date.now()) this.presence?.observe('leaseStarted', { ...g, level: 'control' });
     this.transcript = new Transcript(root);
     this.sessionFile = path.join(root, 'data/sessions.json');
     this.sessions = readJSON(this.sessionFile, {});
     this.moodFile = path.join(root, 'data/preferences.json');
     this.preferences = readJSON(this.moodFile, { mood: 'chill' });
+    this.presence?.set({ mood: this.preferences.mood });
     this.personalities = readJSON(path.join(root, 'bit/persona/personalities.json'), {});
     this.web = new WebLedger({ root });
     this.budget.web = this.web;
@@ -73,7 +76,7 @@ export class Runner {
     this.queue = serial(); // A single cost gate prevents concurrent channels overspending.
     this.controllers = new Set();
   }
-  mood(value) { if (!Object.hasOwn(this.personalities, value)) throw new Error('Unknown personality'); this.preferences.mood = value; saveJSON(this.moodFile, this.preferences); }
+  mood(value) { if (!Object.hasOwn(this.personalities, value)) throw new Error('Unknown personality'); this.preferences.mood = value; saveJSON(this.moodFile, this.preferences); this.presence?.set({ mood: value }); }
   reset(channel) { void this.controls.off(channel, 'reset'); this.screens.off(channel); return this.queue(() => { this.transcript.reset(channel); delete this.sessions[channel]; delete this.webKeys[channel]; saveJSON(this.webKeysFile, this.webKeys); saveJSON(this.sessionFile, this.sessions); }); }
   close() { this.stopped = true; for (const controller of this.controllers) controller.abort(); return this.controls.close(); }
   run(channel, prompt, { notify, approve, fresh = false, webAllowed = true, scheduled = false, publish } = {}) {
@@ -122,12 +125,13 @@ export class Runner {
       const model = process.env.BIT_MODEL || 'claude-sonnet-5';
       const modelCalls = new Set();
       try {
+        this.presence?.set({ thinking: 1 });
         async function* input() { yield { type: 'user', message: { role: 'user', content: `${priorContext}${scheduled ? "Approved scheduled job instructions" : "Ozzy says"}:\n${prompt}` }, parent_tool_use_id: null, session_id: session || '' }; }
         for await (const message of this.queryFn({ prompt: input(), options: {
           cwd: this.root, model: process.env.BIT_MODEL || 'claude-sonnet-5', systemPrompt,
           tools: webAllowed ? BUILTINS : BUILTINS.filter(name => !['WebSearch', 'WebFetch'].includes(name)), ...isolatedSkills, permissionMode: 'default',
           canUseTool: permissions.canUseTool, hooks: permissions.hooks,
-          mcpServers: { machines: machineTools(this.hub), reminders: reminderTools(this.reminders, { channel, notify }), ...(screen ? { screens: screenshotTools(screen) } : {}), ...(control ? { computer: computerTools(control) } : {}) },
+          mcpServers: { presence: expressTools(this.express), machines: machineTools(this.hub), reminders: reminderTools(this.reminders, { channel, notify }), ...(screen ? { screens: screenshotTools(screen) } : {}), ...(control ? { computer: computerTools(control) } : {}) },
           ...(screenRun ? { persistSession: false } : {}), strictMcpConfig: true,
           ...(session ? { resume: session } : {}), maxBudgetUsd: balance.remaining, maxTurns: 30,
           env, abortController: controller,
@@ -158,7 +162,7 @@ export class Runner {
         this.sync.event({ id: modelEventId, thread: channel, kind: modelCalls.size ? 'note' : 'model_call', summary: 'Model run failed', model, payload: { reason: error.name } });
         permissions.audit({ event: 'runner_error', decision: 'stopped', reason: error.name });
         return 'My ring hit a connection snag. Check the brain console and budget ledger before retrying; I won’t claim that task succeeded.';
-      } finally { this.controllers.delete(controller); }
+      } finally { this.presence?.set({ thinking: 0 }); this.controllers.delete(controller); }
     }).catch(error => {
       this.sync.taskUpsert({ thread: channel, status: 'failed', reason: error.name });
       throw error;

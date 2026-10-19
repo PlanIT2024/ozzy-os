@@ -1,3 +1,5 @@
+import { PresenceHub, observeSync } from './presence.js';
+import { startPresenceMirror } from './presenceMirror.js';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { ROOT, required } from '../shared.js';
@@ -13,9 +15,11 @@ import { startBrainSync } from '../bitos/sync.js';
 export async function runBrain({ root = ROOT, env = process.env, runtime = process,
   makeHub = options => new NodeHub(options), makeBudget = () => new Budget(),
   makeGrowth = options => new Growth(options), makeRunner, makeDiscord, makeSync = startBrainSync, makeScheduler = options => new Scheduler(options), makeReminders = options => new Reminders(options) } = {}) {
+  const presence = new PresenceHub();
+  let presenceMirror;
   let unlock = () => {}, hub, runner, discord, growth, scheduler, reminders, sync, dispatch;
   async function cleanup() {
-    try { dispatch?.close(); scheduler?.close(); reminders?.close(); await runner?.close(); await growth?.close(); }
+    try { presenceMirror?.close(); presence.close(); dispatch?.close(); scheduler?.close(); reminders?.close(); await runner?.close(); await growth?.close(); }
     finally { try { discord?.close(); } finally { try { await hub?.close(); } finally { await sync?.close(); unlock(); } } }
   }
   try {
@@ -24,18 +28,20 @@ export async function runBrain({ root = ROOT, env = process.env, runtime = proce
     installShutdown(unlock, cleanup, runtime);
     let dispatchSettings = {};
     sync = makeSync({ root, env, onSettings: captured => { dispatchSettings = captured; } });
+    sync = observeSync(sync, presence);
+    presenceMirror = startPresenceMirror(presence, dispatchSettings);
     // Do not even load Discord or the SDK until process.env has been scrubbed.
     if (!makeRunner) { const { Runner } = await import('./runner.js'); makeRunner = options => new Runner(options); }
     if (!makeDiscord) { const { createDiscord } = await import('./discord.js'); makeDiscord = createDiscord; }
     const budget = makeBudget();
     hub = makeHub({ sync }); await hub.ready;
-    dispatch = createDispatcher({ env: dispatchSettings, hub });
+    dispatch = createDispatcher({ env: dispatchSettings, hub, presence });
     // The dispatcher reports startup errors with redacted operation context.
     void dispatch.ready.catch(() => {});
     growth = makeGrowth({ root, notify: text => discord?.notifyGrowth(text) });
-    reminders = makeReminders({ root, timezone: env.TZ || 'America/New_York', deliver: (reminder, context) => discord.deliverReminder(reminder, context) });
+    reminders = makeReminders({ root, timezone: env.TZ || 'America/New_York', deliver: (reminder, context) => (presence.react('curious'), discord.deliverReminder(reminder, context)) });
     scheduler = makeScheduler({ root, timezone: env.TZ || 'America/New_York', execute: (job, context) => discord.runScheduled(job, context) });
-    runner = makeRunner({ hub, budget, root, growth, reminders, sync });
+    runner = makeRunner({ presence, hub, budget, root, growth, reminders, sync });
     discord = makeDiscord({ runner, hub, budget, scheduler, reminders, env, sync }); await discord.start();
     await reminders.start();
     void scheduler.start().catch(error => console.error('Scheduler startup failed:', error));

@@ -3,7 +3,7 @@ import { createMirrorClient } from './client.js';
 import { wireText } from '../node/agent/policy.js';
 import { redact } from './redact.js';
 
-export function createDispatcher({ env = process.env, hub, makeClient = createMirrorClient, now = Date.now, interval = setInterval, log = console.warn, info = console.info } = {}) {
+export function createDispatcher({ presence, env = process.env, hub, makeClient = createMirrorClient, now = Date.now, interval = setInterval, log = console.warn, info = console.info } = {}) {
   if (env.BITOS_DISPATCH !== '1') return { ready: Promise.resolve(), close() {} };
   const settings = { ...env }, owner = settings.BITOS_OWNER_USER_ID;
   const allowed = new Set((settings.BITOS_AGENT_NODES || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean));
@@ -70,6 +70,7 @@ export function createDispatcher({ env = process.env, hub, makeClient = createMi
   async function finish(r, status, summary, branch) {
     for (const [key, retry] of retries) if (retry.runId === r.id) retries.delete(key);
     await update('agent_runs', r.id, { status, summary: redact(summary, settings), ...(branch ? { branch: redact(branch, settings) } : {}) });
+    if (presence) { delete presence.inputs.agents[r.id]; presence.recompute(); if (status === 'done' || status === 'failed') presence.react(status === 'done' ? 'celebrate' : 'wince'); }
     await update('tasks', r.task_id, { status: status === 'done' ? 'done' : ['stopped','expired','denied'].includes(status) ? 'cancelled' : 'waiting_on_you' });
   }
   const retryKey = (r, method, params = {}) => `${r.id}:${method}:${params.requestId || ''}`;
@@ -104,11 +105,14 @@ export function createDispatcher({ env = process.env, hub, makeClient = createMi
     }
   }
   async function approval(r, n, detail, summary) {
-    await query('approvals', 'insert', db.from('approvals').insert({ id: randomUUID(), task_id: r.task_id, node_id: n.id, risk: 'risky', action_summary: summary, action_detail: detail, expires_at: new Date(now()+600000).toISOString() }));
+    const id = randomUUID(), expires_at = new Date(now()+600000).toISOString();
+    await query('approvals', 'insert', db.from('approvals').insert({ id, task_id: r.task_id, node_id: n.id, risk: 'risky', action_summary: summary, action_detail: detail, expires_at }));
+    presence?.observe('approvalRequested', { id, expires_at });
     await update('tasks', r.task_id, { status: 'waiting_on_you' });
   }
   async function processRun(id) {
     const { run:r, node:n } = await context(id); if (!r) return;
+    if (presence && ['dispatched','running'].includes(r.status)) { presence.inputs.agents[r.id] = { node: n.name }; presence.recompute(); }
     if (recovered.has(id) && !confirmed.has(id) && ['dispatched','running'].includes(r.status) && now()-started >= 120000 && ![...retries.values()].some(retry => retry.runId === id)) return finish(r,'failed','brain restarted');
     if (r.stop_requested && ['requested','awaiting_approval'].includes(r.status)) return finish(r,'stopped','Stopped by owner');
     if (r.stop_requested && ['dispatched','running'].includes(r.status)) {
@@ -135,7 +139,8 @@ export function createDispatcher({ env = process.env, hub, makeClient = createMi
     if (!['run','agent'].includes(kind)) return;
     const expired = Date.parse(a.expires_at) <= now();
     if (retries.has(retryKey(r, kind === 'run' ? 'agent.run' : 'agent.decide', {requestId: a.action_detail.request_id})) && expired) return finish(r,'failed','Approval expired while node offline');
-    if (a.status === 'pending' && !expired) return;
+    if (a.status === 'pending' && !expired) { presence?.observe('approvalRequested', a); return; }
+    presence?.observe('approvalDecided', a);
     const yes = a.status === 'approved' && a.decided_by === n.owner_id && Number.isFinite(Date.parse(a.decided_at)) && Date.parse(a.decided_at) <= Date.parse(a.expires_at) && !expired && !r.stop_requested;
     if (a.status === 'approved' && !yes && !expired && !r.stop_requested) return;
     if (kind === 'run') {
@@ -146,6 +151,7 @@ export function createDispatcher({ env = process.env, hub, makeClient = createMi
       try {
         if (!await retryRequest(r,n,'agent.run',{runId:r.id,taskId:r.task_id,executor:r.executor,folderAlias:r.folder_alias,prompt:r.prompt,leaseMinutes:r.lease_minutes},a)) return;
         confirmed.add(r.id);
+        if (presence) { presence.inputs.agents[r.id] = { node: n.name }; presence.recompute(); }
         const current = await row('agent_runs',r.id);
         if (current.status === 'dispatched') await update('agent_runs',r.id,{status:'running'});
         await update('tasks',r.task_id,{status:'running'});

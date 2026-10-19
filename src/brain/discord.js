@@ -152,6 +152,7 @@ export function createDiscord({ sync = noSync, runner, hub, budget, scheduler, r
     const filters = { owner: message.author.id === owner, location: allowedLocation(message.channel, bitChannel), human: !message.author.bot };
     console.debug(`Discord message: author=${message.author.id} channel=${message.channel.id} owner=${filters.owner} location=${filters.location} human=${filters.human} accepted=${filters.owner && filters.location && filters.human}`);
     if (!acceptsMessage(message, owner, bitChannel)) return;
+    runner.presence?.set({ listening: 1 }); runner.presence?.react('curious');
     let channel = message.channel;
     try {
       if (!message.content.trim()) return;
@@ -161,6 +162,7 @@ export function createDiscord({ sync = noSync, runner, hub, budget, scheduler, r
       const response = await runner.run(channel.id, message.content, { fresh, notify: text => sendText(channel, text), approve: request => approvals.request(channel, request), publish: ({ buffer, mimeType }) => channel.send({ files: [{ attachment: buffer, name: mimeType === 'image/png' ? 'screenshot.png' : 'screenshot.jpg' }], allowedMentions: { parse: [] } }) });
       await sendText(channel, response);
     } catch (e) { fail(e); await sendText(channel, 'My ring hit a snag. Check the brain console, Ozzy.').catch(fail); }
+    finally { runner.presence?.set({ listening: 0 }); }
   });
   client.on('interactionCreate', async interaction => {
     const ownerPassed = interaction.user.id === owner;

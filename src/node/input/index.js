@@ -41,6 +41,7 @@ export class InputControl extends EventEmitter {
     try { await this.backend.start(); }
     catch { await this.stop('portal start failed', true); throw new Error('RemoteDesktop consent failed; see node portal diagnostics'); }
     if (!this.session || this.now() >= Date.parse(expiresAt) || !await this.available()) { await this.stop('expired or locked during consent', true); throw new Error('Control grant expired or session became unavailable during consent'); }
+    this.capturing = true; this.emit('capture');
     return { started: true, grantId, newSession: true };
   }
   async inspect(raw = {}) {
@@ -104,6 +105,7 @@ export class InputControl extends EventEmitter {
     if (s && revoke) { s.state.revoked = true; try { this.save(); } catch { this.log('input failure stage=persist_revocation; capability disabled'); } }
     if (s) { this.log(`input ended ${JSON.stringify({grantId:s.grantId,reason,count:s.state.count})}`); this.emit('closed',{grantId:s.grantId,reason,count:s.state.count,delivery:['action failure','action cap'].includes(reason)&&validDelivery(s.state.lastDelivery)?s.state.lastDelivery:undefined}); }
     await this.backend.releaseAll().catch(()=>{}); await this.backend.stop().catch(()=>{});
+    this.capturing = false; this.emit('capture');
   }
   async close() { await this.stop('disconnect'); }
 }

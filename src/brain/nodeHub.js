@@ -110,6 +110,7 @@ export class NodeHub extends EventEmitter {
       const p = this.pending.get(m.id);
       if (p && p.peer === peer) { this.pending.delete(m.id); clearTimeout(p.timer); if (m.ok === true) p.resolve(m.result); else p.reject(Object.assign(new Error(String(m.error || 'Node request failed')),{delivery:validDelivery(m.delivery)?m.delivery:undefined,launchFailure:m.launchFailure===true})); }
     } else if (m.type !== 'heartbeat') throw new Error('Invalid application message');
+    if (['heartbeat', 'hello'].includes(m.type)) n.capture = { screen: m.capture?.screen === true, input: m.capture?.input === true };
     n.lastSeen = Date.now();
     if (m.type === 'hello' || m.type === 'capabilities') this.emit('node_connected', { machine: n.machine });
     this.sync.nodeSeen({ ...n, identity: id, connected: m.type === 'hello', capabilitiesChanged: m.type === 'capabilities' });

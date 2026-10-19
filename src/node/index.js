@@ -32,6 +32,9 @@ export function startNode({ transport = process.env.NODE_TRANSPORT || 'local', u
   if (transport === 'local' && !['127.0.0.1', 'localhost', '[::1]'].includes(new URL(url).hostname)) throw new Error('Local transport must use loopback');
   const events = new EventEmitter();
   let ws, relay, peer, reconnect, pulse, handshakeTimer, stopped = false, connected = false, attempt = 0, busy = false, screenAvailable = false, inputAvailable = false, checkingScreen = false, agentAvailable = agents.available();
+  let screenCapturing = false;
+  const captureState = () => ({ screen: screenCapturing || input.capturing === true, input: input.capturing === true });
+  const reportCapture = () => { if (peer?.state === 'open') { try { peer.send({ type: 'heartbeat', capture: captureState() }); } catch { recover('capture status delivery failed'); } } };
   function transition(next) { if (connected !== next) { connected = next; agents.connectionState(next); log(`bit-node ${machine} ${next ? 'connected' : 'disconnected'}`); } }
   function clearPeer() { void input.close(); clearTimeout(handshakeTimer); clearInterval(pulse); peer?.close(); peer = null; transition(false); }
   function recover(reason) { if (stopped) return; log(`bit-node ${machine} E2E unavailable: ${reason}; retrying`); clearPeer(); if (relay) relay.ws?.terminate(); else ws?.terminate(); }
@@ -43,9 +46,9 @@ export function startNode({ transport = process.env.NODE_TRANSPORT || 'local', u
     handshakeTimer = setTimeout(() => recover('E2E handshake timed out (untrusted key/name or unreachable brain)'), handshakeMs);
     current.on('ready', () => {
       clearTimeout(handshakeTimer); transition(true); attempt = 0;
-      current.send({ type: 'hello', machine, os: os.platform(), arch: os.arch(), hostname: os.hostname(), version: '2.0.0', capabilities: capabilities() });
+      current.send({ type: 'hello', machine, os: os.platform(), arch: os.arch(), hostname: os.hostname(), version: '2.0.0', capabilities: capabilities(), capture: captureState() });
       flushEvents();
-      pulse = setInterval(() => { try { current.send({ type: 'heartbeat' }); } catch { recover('heartbeat delivery failed'); } }, heartbeat);
+      pulse = setInterval(() => { try { current.send({ type: 'heartbeat', capture: captureState() }); } catch { recover('heartbeat delivery failed'); } }, heartbeat);
     });
     current.on('message', async m => {
       if (m.type === 'agent.ack') { pendingEvents.delete(eventKey(m)); return; }
@@ -64,15 +67,15 @@ export function startNode({ transport = process.env.NODE_TRANSPORT || 'local', u
       busy = true;
       try {
         let result;
-        if (m.method === 'screen') { result = await screen.capture(); input.observe(result); }
+        if (m.method === 'screen') { screenCapturing = true; reportCapture(); result = await screen.capture(); input.observe(result); }
         else if (m.method === 'input_start') result = await input.start(m.params || {});
         else if (m.method === 'input_resolve_app') result = await input.resolveApp(m.params || {});
         else if (m.method === 'input_focus') result = await input.inspect(m.params || {});
         else if (m.method === 'input_action') result = await input.act(m.params || {});
-        else result = await status();
+        else result = { ...await status(), capture: captureState() };
         sendResult({ ok: true, result });
       } catch (error) { if (m.method === 'screen') log('screen capture failure stage=node_capture (see helper diagnostics)'); else if (m.method.startsWith('input')) log('input failure stage=node_request'); sendResult({ ok: false, delivery:error.delivery, launchFailure:error.launchFailure===true, error: m.method.startsWith('input') ? (/^(Control|Blocked application)/.test(error.message) ? error.message : 'Input control refused or failed; check node portal diagnostics') : m.method === 'screen' ? 'Screen capture failed or desktop consent was denied/timed out' : 'Status collection failed' }); }
-      finally { busy = false; }
+      finally { screenCapturing = false; busy = false; reportCapture(); }
     });
     current.start();
   }
@@ -98,6 +101,7 @@ export function startNode({ transport = process.env.NODE_TRANSPORT || 'local', u
     if (Number.isSafeInteger(message.sequence)) { pendingEvents.set(eventKey(message), message); if (pendingEvents.size > 2048) { pendingEvents.delete(pendingEvents.keys().next().value); log('agent replay buffer overflow: oldest event evicted'); } }
     if (peer?.state === 'open') { try { peer.send(message); } catch { log('agent event delivery unavailable'); } }
   });
+  input.on('capture', reportCapture);
   input.on('closed', details => { if (peer?.state === 'open') { try { peer.send({ type: 'control_closed', ...details }); } catch { log('input closure delivery unavailable'); } } });
   async function refreshScreen() {
     if (stopped || checkingScreen) return; checkingScreen = true;
