@@ -5,13 +5,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createTaskActions } from '../src/brain/chatTasks.js';
-import { startDashboardChat, replyWriter, replyId } from '../src/brain/dashboardChat.js';
+import { startDashboardChat, replyWriter, replyId, conversationTitle, autoTitleConversation } from '../src/brain/dashboardChat.js';
 import { createPermissions } from '../src/brain/permissions.js';
 import { Runner } from '../src/brain/runner.js';
 import { Budget } from '../src/brain/budget.js';
 import { saveJSON } from '../src/shared.js';
 function database() {
- const tables={workspace_members:[{workspace_id:'ws',user_id:'owner',role:'owner'}],tasks:[],projects:[],nodes:[],node_shares:[],task_events:[],conversations:[{id:'convo',workspace_id:'ws',owner_id:'owner',updated_at:new Date().toISOString()}],chat_messages:[],approvals:[]},calls=[],events=[];
+ const tables={workspace_members:[{workspace_id:'ws',user_id:'owner',role:'owner'}],tasks:[],projects:[],nodes:[],node_shares:[],task_events:[],conversations:[{id:'convo',workspace_id:'ws',owner_id:'owner',title:'New chat',title_set_by_owner:false,updated_at:new Date().toISOString()}],chat_messages:[],approvals:[]},calls=[],events=[];
  return {tables,calls,events,async rpc(name,p){assert.equal(name,'chat_apply_task');const membership=tables.workspace_members.find(m=>m.workspace_id===p.p_workspace&&m.user_id===p.p_owner);if(!membership||membership.role==='viewer')return {error:{message:'denied'}};let task=tables.tasks.find(t=>t.id===p.p_task&&t.workspace_id===p.p_workspace);const before=task?Object.fromEntries(Object.keys(p.p_fields).map(k=>[k,task[k]??null])):{};if(p.p_create){task={id:p.p_task,workspace_id:p.p_workspace,status:'inbox',source:'bit',created_by:p.p_owner,updated_at:new Date().toISOString(),...p.p_fields};tables.tasks.push(task);}else {if(!task||task.updated_at!==p.p_expected)return {data:[],error:null};Object.assign(task,p.p_fields,{updated_at:new Date().toISOString()});}tables.task_events.push({task_id:task.id,payload:{conversation_id:p.p_conversation,source:'bit_chat',before,changed:p.p_fields}});return {data:[structuredClone(task)],error:null};},removeChannel(){},channel(){const c={on(_event,config,fn){events.push({config,fn});return c;},subscribe(){return c;}};return c;},from(table){const filters=[];let op='select',value,one=false,sorts=[],max=Infinity;
   const q={select(){return q;},eq(k,v){filters.push(r=>r[k]===v);return q;},is(k,v){filters.push(r=>(r[k]??null)===v);return q;},in(k,v){filters.push(r=>v.includes(r[k]));return q;},gt(k,v){filters.push(r=>r[k]>v);return q;},gte(k,v){filters.push(r=>r[k]>=v);return q;},order(k,opts={}){sorts.push([k,opts.ascending!==false]);return q;},limit(n){max=n;return q;},single(){one=true;return q;},insert(v){op='insert';value=v;return q;},update(v){op='update';value=v;return q;},then(resolve,reject){try{
    calls.push({table,op,value:structuredClone(value)});let rows=tables[table].filter(r=>filters.every(f=>f(r)));
@@ -90,4 +90,33 @@ test('reconnect accepts a new recent owner row, ignores spoofed notifications an
 });
 test('lost local ledger still detects an existing deterministic reply',async t=>{
  const db=database(),m=ownerMessage(db);db.tables.chat_messages.push({id:replyId(m.id),author:'bit',status:'done',conversation_id:'convo',workspace_id:'ws',owner_id:'owner'});const f=chatFixture(t,db);await f.service.ready;assert.equal(f.calls,0);assert.equal(db.tables.chat_messages.length,2);f.service.close();
+});
+
+test('brain titles a new conversation after its first reply, once, within 40 characters',async t=>{
+ const db=database();const first=ownerMessage(db,{body:'Help me plan the next release with a very detailed checklist'});
+ let release,started;const gate=new Promise(resolve=>{release=resolve;}),entered=new Promise(resolve=>{started=resolve;});
+ const f=chatFixture(t,db,{runner:{async run(){started();await gate;return 'Done';}}});
+ await entered;assert.equal(db.tables.conversations[0].title,'New chat','title waits for the reply');release();await f.service.ready;
+ assert.equal(db.tables.chat_messages.find(m=>m.id===replyId(first.id)).status,'done');
+ assert.equal(db.tables.conversations[0].title,'Help me plan the next release with a');
+ assert.ok(Array.from(db.tables.conversations[0].title).length<=40);
+ ownerMessage(db,{body:'A totally different topic'});await f.service.scan();
+ assert.equal(db.tables.conversations[0].title,'Help me plan the next release with a');f.service.close();
+});
+test('owner rename during reply always wins, including the default title',async t=>{
+ for(const title of ['Owner chose this','New chat']) {
+  const db=database();ownerMessage(db);
+  const f=chatFixture(t,db,{runner:{async run(){Object.assign(db.tables.conversations[0],{title,title_set_by_owner:true});return 'Done';}}});
+  await f.service.ready;assert.equal(db.tables.conversations[0].title,title);assert.equal(db.tables.conversations[0].title_set_by_owner,true);f.service.close();
+ }
+});
+test('late auto-title CAS cannot overwrite an owner rename',async()=>{
+ const db=database(),row=ownerMessage(db,{body:'Automatic topic'}),from=db.from;
+ db.from=table=>{const q=from(table);if(table==='conversations'){const update=q.update;q.update=patch=>{Object.assign(db.tables.conversations[0],{title:'Owner wins',title_set_by_owner:true});return update(patch);};}return q;};
+ await autoTitleConversation(db,row);assert.equal(db.tables.conversations[0].title,'Owner wins');
+});
+test('extractive titles sanitize markup, normalize whitespace, and bound Unicode',()=>{
+ assert.equal(conversationTitle(' **Plan**\n  _release_ `today` '),'Plan release today');
+ assert.equal(Array.from(conversationTitle('🟢'.repeat(60))).length,40);
+ assert.equal(conversationTitle('   '),'Conversation');
 });

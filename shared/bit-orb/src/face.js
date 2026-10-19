@@ -1,5 +1,5 @@
 export const MOODS={chill:["#5ef0ff","#b45cff"],hype:["#ffc04a","#ff4f7b"],chaotic:["#4fffb0","#ff4fd8"],gremlin:["#b6ff3b","#16c79a"],sage:["#9a8bff","#3b5bff"]};
-export const REACT={celebrate:1.6,wince:1.2,curious:2.0,unsure:2.5};
+export const REACT={celebrate:1.6,wince:1.2,curious:2.0,unsure:4.0};
 const DETAIL={full:284,simple:64,min:28};
 const MO={
   smile:"M127 170 Q150 166 173 170 Q172 200 150 201 Q128 200 127 170Z",

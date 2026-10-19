@@ -24,6 +24,20 @@ export function replyWriter({write,now=Date.now,sleep=ms=>new Promise(resolve=>s
   });},
  };
 }
+// Extractive titles need no extra model call and never interpret message instructions.
+export function conversationTitle(text) {
+ const words=String(text).replace(/https?:\/\/\S+/g,'').replace(/[*_`#<>\[\]]/g,'').replace(/\s+/g,' ').trim();
+ const chars=Array.from(words || 'Conversation');
+ if(chars.length<=40)return chars.join('');
+ const prefix=chars.slice(0,40).join('');
+ return prefix.replace(/\s+\S*$/,'') || prefix;
+}
+export async function autoTitleConversation(db,row) {
+ const first=await checked(db.from('chat_messages').select('id').eq('conversation_id',row.conversation_id).eq('workspace_id',row.workspace_id).eq('owner_id',row.owner_id).eq('author','owner').order('created_at').order('id').limit(1));
+ if(first[0]?.id!==row.id)return;
+ // The predicate is evaluated under the row lock. A racing owner rename wins.
+ await checked(db.from('conversations').update({title:conversationTitle(row.body)}).eq('id',row.conversation_id).eq('workspace_id',row.workspace_id).eq('owner_id',row.owner_id).eq('title_set_by_owner',false).eq('title','New chat'));
+}
 export function startDashboardChat({root,env={},runner,presence,makeClient=createMirrorClient,now=Date.now,sleep,log=console.warn}={}) {
  if(env.BITOS_SUPABASE!=='1'||env.BITOS_DASHBOARD_CHAT!=='1')return {ready:Promise.resolve(),close(){}};
  const owner=env.BITOS_OWNER_USER_ID;
@@ -72,6 +86,7 @@ export function startDashboardChat({root,env={},runner,presence,makeClient=creat
     cards.push(...waiting);response='Tap Approve or Deny on the card, Ozzy. Chat words never decide an approval.';
    } else response=await runner.run(`dash:${row.conversation_id}`,row.body,{tasks,output:body=>writer.publish(body,cards),onError:()=>{failed=true;},approve:async()=>false,notify:async()=>{},webAllowed:true});
    await writer.finish(failed?'error':'done',failed?'My ring hit a snag. Please try a smaller request.':response,cards);
+   if(!failed)await autoTitleConversation(db,row);
    await checked(db.from('conversations').update({updated_at:iso()}).eq('id',row.conversation_id).eq('owner_id',owner).eq('workspace_id',row.workspace_id));
    ledger[row.id]={status:'done'};persist();
   } catch {

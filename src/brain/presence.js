@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 
-export const REACTION_MS = { celebrate: 1600, wince: 1200, curious: 2000, unsure: 2500 };
+export const REACTION_MS = { celebrate: 1600, wince: 1200, curious: 2000, unsure: 4000 };
 export const CAPTURE_PULSE_MS = 1200;
 export const PRIORITY = ['idle', 'listen', 'think', 'agent', 'screen', 'lease', 'approve'];
 const time = value => typeof value === 'number' ? value : Date.parse(value);

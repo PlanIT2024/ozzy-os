@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { computePresence, PresenceHub, PRIORITY, REACTION_MS, createPresencePublisher, observeSync } from '../src/brain/presence.js';
-import { faceFor, detailFor } from '../shared/bit-orb/src/face.js';
+import { faceFor, detailFor, REACT } from '../shared/bit-orb/src/face.js';
 import { createExpress } from '../src/brain/tools.js';
 import { createPermissions, EXPRESS_TOOL } from '../src/brain/permissions.js';
 import { noSync } from '../src/bitos/sync.js';
@@ -114,4 +114,11 @@ test('capture pulse strengthens the scan at every size without overriding approv
   if(size>=40){assert.equal(pulse.pupil[0][0].opacity,1);assert.equal(pulse.pupil[0][3].opacity,0.08);}
  }
  for(const state of ['approve','offline'])assert.deepEqual(faceFor({state,capturePulse:{progress:0.2}}),faceFor({state}));
+});
+
+test('unsure remains visible for four seconds in brain and browser',()=>{
+ assert.equal(REACTION_MS.unsure,4000);assert.equal(REACT.unsure,4);
+ let clock=now;const hub=new PresenceHub({now:()=>clock});hub.react('unsure');
+ clock+=3999;hub.recompute();assert.equal(hub.value.reaction.kind,'unsure');
+ clock++;hub.recompute();assert.equal(hub.value.reaction,null);hub.close();
 });

@@ -46,7 +46,7 @@ async function inside(page) {
  assert.ok(box.x >= -0.5 && box.y >= -0.5);
  assert.ok(box.x + box.width <= viewport.width + 0.5);
  assert.ok(box.y + box.height <= viewport.height + 0.5);
- const content = await page.locator('.bit-panel-body').evaluate(el => ({ box: el.getBoundingClientRect().toJSON(), scrollHeight: el.scrollHeight, clientHeight: el.clientHeight }));
+ const content = await page.locator('.bit-panel-chat .chat-messages, .bit-panel:not(.bit-panel-chat) .bit-panel-body').evaluate(el => ({ box: el.getBoundingClientRect().toJSON(), scrollHeight: el.scrollHeight, clientHeight: el.clientHeight }));
  assert.ok(content.box.width > 100 && content.box.height > 50, 'content has a usable visible area');
  assert.ok(content.box.x >= box.x && content.box.y >= box.y);
  assert.ok(content.scrollHeight > content.clientHeight, 'long content scrolls inside the shell');
@@ -207,8 +207,14 @@ test('approval preview expands and active activity uses live-log and stop callba
  }
 });
 
-async function chatReady(browser,width) {
+async function chatReady(browser,width,keyboard=false) {
  const page=await browser.newPage({viewport:{width,height:width===320?568:844},isMobile:width<640,hasTouch:width<640});
+ if(keyboard)await page.addInitScript(()=>{
+  const viewport=new EventTarget();let height=innerHeight,top=0;
+  Object.defineProperties(viewport,{height:{get:()=>height},width:{get:()=>innerWidth},offsetTop:{get:()=>top},offsetLeft:{get:()=>0}});
+  Object.defineProperty(window,'visualViewport',{configurable:true,value:viewport});
+  window.setKeyboardViewport=(nextHeight,nextTop=0)=>{height=nextHeight;top=nextTop;viewport.dispatchEvent(new Event('resize'));viewport.dispatchEvent(new Event('scroll'));};
+ });
  await page.route('**/src/client.ts',route=>route.fulfill({contentType:'application/javascript',body:readFileSync(new URL('./chat-client.fixture.mjs',import.meta.url),'utf8')}));
  await page.goto(base+'/scripts/fixtures/bit-panel.html?chat=1');
  await page.getByRole('button',{name:'Show bIT presence'}).click();await inside(page);
@@ -250,5 +256,66 @@ test('completed replies are announced after realtime streaming updates',async()=
   await page.evaluate(()=>{const db=window.chatDB;db.tables.chat_messages.push({id:'live-reply',created_at:new Date(Date.now()+1000).toISOString(),conversation_id:'conversation',workspace_id:'ws',owner_id:'owner',author:'bit',body:'Streaming text',status:'streaming',cards:null});db.notify();});
   const chat=page.getByRole('region',{name:'Chat with bIT'});await chat.locator('.chat-message').getByText('Streaming text',{exact:true}).waitFor();assert.equal(await chat.locator('.sr-only').innerText(),'I made a task. This action needs your decision.');
   await page.evaluate(()=>{const db=window.chatDB;Object.assign(db.tables.chat_messages.at(-1),{body:'New completed reply',status:'done'});db.notify();});await page.waitForFunction(()=>document.querySelector('.dashboard-chat .sr-only')?.textContent==='New completed reply');
+ }finally{await page.close();}}
+});
+
+test('390x844 keyboard and Safari toolbar viewport keep header and Send pinned',async()=>{
+ for(const {name,browser} of browsers){const page=await chatReady(browser,390,true);try{
+  const chat=page.getByRole('region',{name:'Chat with bIT'}),input=chat.getByRole('textbox',{name:'Message bIT'}),send=chat.getByRole('button',{name:'Send',exact:true});
+  await input.fill('Keyboard layout proof');
+  for(const [height,top] of [[480,0],[420,32]]){
+   await page.evaluate(([h,y])=>window.setKeyboardViewport(h,y),[height,top]);
+   await page.waitForFunction(([h,y])=>{const r=document.querySelector('.bit-panel').getBoundingClientRect();return Math.abs(r.height-h)<1&&Math.abs(r.top-y)<1;},[height,top]);
+   measurements.push({browser:name,viewport:page.viewportSize(),visualViewport:{height,top},panel:await page.getByRole('dialog').boundingBox()});
+   const header=await page.locator('.bit-panel-header').boundingBox(),composer=await page.locator('.chat-composer').boundingBox(),button=await send.boundingBox();
+   assert.ok(header.y>=top && header.y+header.height<top+height,'header stays in visible viewport');
+   assert.ok(button.y>=header.y+header.height&&button.y+button.height<=top+height,'Send is above keyboard/toolbar');
+   const list=page.locator('.chat-messages');
+   assert.ok(await list.evaluate(el=>el.scrollHeight>el.clientHeight),'messages scroll with keyboard open');
+   for(const fraction of [0,1]){
+    await list.evaluate((el,fraction)=>{el.scrollTop=fraction*el.scrollHeight;},fraction);
+    assert.deepEqual(await page.locator('.bit-panel-header').boundingBox(),header,'scrolling does not move header');
+    assert.deepEqual(await page.locator('.chat-composer').boundingBox(),composer,'scrolling does not move composer');
+   }
+   assert.equal(await page.locator('.bit-panel-body').evaluate(el=>el.scrollHeight>el.clientHeight),false,'no nested body scrolling');
+  }
+  if(process.env.BIT_PANEL_PROOF_DIR)await page.screenshot({path:`${process.env.BIT_PANEL_PROOF_DIR}/keyboard-${name}-390.png`});
+  await send.click();await page.waitForFunction(()=>window.chatDB.tables.chat_messages.some(m=>m.body==='Keyboard layout proof'));
+  await page.evaluate(()=>window.setKeyboardViewport(844,0));
+  await page.waitForFunction(()=>Math.abs(document.querySelector('.bit-panel').getBoundingClientRect().height-844)<1);
+ }finally{await page.close();}}
+});
+test('opens latest chat, renames any selected conversation, and retains selection on realtime',async()=>{
+ for(const {browser} of browsers){const page=await chatReady(browser,390);try{
+  const chat=page.getByRole('region',{name:'Chat with bIT'}),select=chat.getByRole('combobox',{name:'Recent conversations'});
+  assert.equal(await select.inputValue(),'conversation');
+  assert.equal(await chat.getByRole('button',{name:'New chat',exact:true}).count(),1);
+  await page.evaluate(()=>{const db=window.chatDB;db.tables.conversations.push({id:'older',workspace_id:'ws',owner_id:'owner',title:'Older chat',title_set_by_owner:false,updated_at:'2000-01-01T00:00:00Z'});db.notify();});
+  await select.selectOption('older');await chat.getByRole('button',{name:'Rename conversation'}).click();
+  const title=chat.getByRole('textbox',{name:'Conversation title'});assert.equal(await title.inputValue(),'Older chat');assert.equal(await title.getAttribute('maxlength'),'80');
+  await title.fill('My manual name');await chat.getByRole('button',{name:'Save title'}).click();
+  await page.waitForFunction(()=>window.chatDB.tables.conversations.find(c=>c.id==='older').title_set_by_owner===true);
+  assert.equal(await select.inputValue(),'older');assert.equal(await select.locator('option:checked').innerText(),'My manual name');
+  const write=await page.evaluate(()=>window.chatDB.writes.find(w=>w.table==='conversations'&&w.operation==='update'));
+  assert.deepEqual(write.payload,{title:'My manual name',title_set_by_owner:true});
+  await page.evaluate(()=>{window.chatDB.tables.conversations[0].updated_at=new Date(Date.now()+60000).toISOString();window.chatDB.notify();});
+  assert.equal(await select.inputValue(),'older','realtime does not switch an active selection');
+  await page.getByRole('button',{name:'Close bIT panel'}).click();await page.getByRole('button',{name:'Show bIT presence'}).click();
+  await page.waitForFunction(()=>document.querySelector('.dashboard-chat select')?.value==='conversation');
+ }finally{await page.close();}}
+});
+test('markdown uses safe markup and streaming has no thinking placeholder',async()=>{
+ for(const {browser} of browsers){const page=await chatReady(browser,390);try{
+  const chat=page.getByRole('region',{name:'Chat with bIT'});
+  await page.evaluate(()=>{const db=window.chatDB;Object.assign(db.tables.chat_messages[0],{body:'**Bold** *italic* `inline`\n\n- first\n- second\n\n[link](https://example.com)\n\n```js\nconst n = 1;\n```\n\n<img src=x onerror="window.pwned=1">\n\n[bad](javascript:alert%281%29)',cards:null});db.notify();});
+  const markdown=chat.locator('.message-markdown');await markdown.locator('strong').filter({hasText:'Bold'}).waitFor();
+  assert.equal(await markdown.locator('em').innerText(),'italic');assert.equal(await markdown.locator('ul li').count(),2);assert.equal(await markdown.locator('pre code').count(),1);
+  assert.equal(await markdown.getByRole('link',{name:'link',exact:true}).getAttribute('target'),'_blank');assert.equal(await markdown.getByRole('link',{name:'link',exact:true}).getAttribute('rel'),'noopener noreferrer');
+  assert.equal(await markdown.locator('img,script,iframe,[onerror],a[href^="javascript:"]').count(),0);assert.equal(await page.evaluate(()=>window.pwned),undefined);
+  await page.evaluate(()=>{const db=window.chatDB;db.tables.chat_messages[0].body='';db.tables.chat_messages[0].status='streaming';db.tables.approvals=[];db.notify();window.qa.idle();});
+  await page.waitForFunction(()=>document.querySelector('.message-markdown')?.textContent==='');
+  assert.equal(await chat.getByText('bIT is thinking…',{exact:true}).count(),0);
+  assert.equal(await page.getByRole('region',{name:'Current activity'}).count(),0,'idle activity hidden');
+  assert.equal(await page.getByRole('heading',{name:'Chat with bIT',exact:true}).count(),1);
  }finally{await page.close();}}
 });

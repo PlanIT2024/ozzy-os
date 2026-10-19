@@ -6,10 +6,11 @@ type Props = {
  title: string;
  children: ReactNode;
  onClose: () => void;
+ chat?: boolean;
 };
 
 /** Shared, scrollable shell for presence and future dashboard conversations. */
-export function BitPanel({ anchor, avatar, title, children, onClose }: Props) {
+export function BitPanel({ anchor, avatar, title, children, onClose, chat = false }: Props) {
  const panel = useRef<HTMLDialogElement>(null);
  const closeButton = useRef<HTMLButtonElement>(null);
  const titleId = useId();
@@ -28,12 +29,14 @@ export function BitPanel({ anchor, avatar, title, children, onClose }: Props) {
      unlock = () => { for (const key of keys) body.style[key] = saved[key]; window.scrollTo(x, y); };
     }
     dialog.style.left = '0px';
-    dialog.style.top = '0px';
+    dialog.style.top = `${window.visualViewport?.offsetTop || 0}px`;
+    dialog.style.height = `${window.visualViewport?.height || window.innerHeight}px`;
     dialog.style.maxHeight = '';
     dialog.style.maxWidth = '';
     return;
    }
    unlock?.(); unlock = undefined;
+   dialog.style.height = '';
    const viewport = window.visualViewport;
    const x = viewport?.offsetLeft || 0, y = viewport?.offsetTop || 0;
    const width = viewport?.width || window.innerWidth, height = viewport?.height || window.innerHeight;
@@ -69,7 +72,7 @@ export function BitPanel({ anchor, avatar, title, children, onClose }: Props) {
    anchor.current?.focus({ preventScroll: true });
   };
  }, [anchor, onClose]);
- return <dialog ref={panel} className="bit-panel" aria-labelledby={titleId}
+ return <dialog ref={panel} className={`bit-panel${chat ? ' bit-panel-chat' : ''}`} aria-labelledby={titleId}
   onKeyDown={event => {
    if (event.key !== 'Tab') return;
    const dialog = event.currentTarget;

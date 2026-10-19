@@ -85,7 +85,7 @@ outrank reactions; reactions never change the state underneath.
 | celebrate | 1.6s | Jump, big grin, sparkle burst, brows up | Agent task succeeded, deploy or tests passed |
 | wince | 1.2s | Squint, middle pixel row only, worried mouth, small shake | Agent task failed, tests failed |
 | curious | 2.0s | One brow up, eyes glance toward the source, "o" mouth | New message from Ozzy, a reminder firing |
-| unsure | 2.5s | One brow up, "?" in the pixel grid, flat mouth | bIT himself, via the `express` tool, when genuinely uncertain |
+| unsure | 4s | One brow up, "?" in the pixel grid, flat mouth | bIT himself, via the `express` tool, when genuinely uncertain |
 
 At most one reaction plays at a time; a new one replaces the old.
 
