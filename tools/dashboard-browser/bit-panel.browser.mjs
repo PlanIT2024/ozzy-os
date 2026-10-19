@@ -11,7 +11,7 @@ let server, base;
 const browsers = [];
 const measurements = [];
 before(async () => {
- server = spawn(process.execPath, ['node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', '0'], { cwd: fileURLToPath(new URL('..', import.meta.url)), stdio: ['ignore', 'pipe', 'pipe'] });
+ server = spawn(process.execPath, ['node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', '0'], { cwd: fileURLToPath(new URL('../../apps/dashboard/', import.meta.url)), stdio: ['ignore', 'pipe', 'pipe'] });
  let output = '';
  base = await new Promise((resolve, reject) => {
   const timeout = setTimeout(() => reject(Error('Vite startup timeout: ' + output)), 15000);
@@ -31,7 +31,7 @@ after(async () => {
 async function ready(browser, width, height) {
  const page = await browser.newPage({ viewport: { width, height }, isMobile: width < 640, hasTouch: width < 640 });
  // Run the actual component with deterministic content, without hosted credentials.
- await page.route('**/src/client.ts', route => route.fulfill({ contentType: 'application/javascript', body: 'export const supabase = null;' }));
+ await page.route('**/src/client.ts', route => route.fulfill({ contentType: 'application/javascript', body: `const presence={state:'idle',mood:'chill',reaction:null,node:null,lease:null,watching:[],attention:'ambient',updatedAt:new Date().toISOString()}; export const supabase={from:()=>({select(){return this},eq(){return this},async maybeSingle(){return {data:{presence},error:null}}}),channel:()=>({on(){return this},subscribe(){return this}}),removeChannel:async()=>{}};` }));
  await page.goto(base + '/scripts/fixtures/bit-panel.html');
  await page.getByRole('button', { name: 'Show bIT presence' }).waitFor();
  return page;
@@ -75,7 +75,7 @@ for (const width of [320, 390, 768, 1280]) test(`panel bounds, scrolling and dis
    }
    await page.locator('.bit-panel-body').evaluate(el => { el.scrollTop = el.scrollHeight; });
    await page.waitForFunction(() => { const el = document.querySelector('.bit-panel-body'); return el.scrollTop + el.clientHeight >= el.scrollHeight - 1; });
-   const last = await page.getByText('Approval 80: visible scrolling content', { exact: true }).boundingBox();
+   const last = await page.getByRole('dialog').getByText('Approval 80: visible scrolling content', { exact: true }).boundingBox();
    const box = await page.getByRole('dialog').boundingBox();
    assert.ok(last.y >= box.y && last.y + last.height <= box.y + box.height, 'last content is visible after scrolling');
    if (process.env.BIT_PANEL_PROOF_DIR) await page.screenshot({ path: `${process.env.BIT_PANEL_PROOF_DIR}/after-${name}-${width}.png` });
@@ -120,5 +120,59 @@ test('open panel responds to resizing and restores a scrolled mobile page', asyn
    assert.equal(await page.evaluate(() => scrollY), before);
    assert.equal(await page.evaluate(() => document.body.style.overflow), 'auto', 'pre-existing styles restored');
   } finally { await page.close(); }
+ }
+});
+
+for (const status of ['approved','denied']) test(`panel and Approvals share ${status} decisions and command confirmation`, async()=>{
+ for(const {browser} of browsers) for(const surface of ['panel','section']) {
+  const page=await ready(browser,390,844);
+  try {
+   await page.evaluate(()=>window.qa.command());
+   if(surface==='panel')await page.getByRole('button',{name:'Show bIT presence'}).click();
+   const scope=surface==='panel'?page.getByRole('dialog'):page.locator('main .approvals');
+   const card=scope.locator('[data-approval-id="0"]');
+   await card.getByRole('button',{name:status==='approved'?'Approve':'Deny',exact:true}).click();
+   if(status==='approved') {
+    assert.deepEqual(await page.evaluate(()=>window.decisions),[], 'first command click only arms');
+    await card.getByRole('button',{name:'Approve command?',exact:true}).click();
+   }
+   await page.waitForFunction(()=>window.decisions.length===1);
+   assert.deepEqual(await page.evaluate(()=>window.decisions),[{id:'0',status}]);
+   assert.equal(await card.getByRole('button').count(),0);
+   assert.ok(await card.getByText(status==='approved'?'Approved':'Denied',{exact:true}).count());
+   if(surface==='panel'){
+    await page.evaluate(()=>window.qa.advance(3000));
+    await card.waitFor({state:'detached'});
+    assert.equal(await page.locator('.orb-badge').count(),0);
+    assert.equal(await page.locator('.orb-button bit-orb').evaluate(el=>el.presence.state),'idle');
+   }
+  } finally {await page.close();}
+ }
+});
+test('panel orders urgency, shows run details, and removes remotely decided and expired cards',async()=>{
+ for(const {browser} of browsers){
+  const page=await ready(browser,320,568);
+  try{
+   await page.getByRole('button',{name:'Show bIT presence'}).click();
+   const panel=page.getByRole('dialog');
+   assert.equal(await panel.locator('.approval-card').first().getAttribute('data-approval-id'),'0');
+   assert.ok(await panel.getByText('Folder: ozzy-os · Lease: 20 min',{exact:true}).count());
+   assert.equal(await page.locator('.orb-badge').innerText(),'80');
+   assert.equal(await page.locator('.orb-button bit-orb').evaluate(el=>el.presence.state),'approve');
+   await page.evaluate(()=>window.qa.remote('0','denied'));
+   const first=panel.locator('[data-approval-id="0"]');
+   await first.getByText('Denied',{exact:true}).waitFor();
+   assert.equal(await page.locator('.orb-badge').innerText(),'79');
+   await page.evaluate(()=>window.qa.advance(3000));await first.waitFor({state:'detached'});
+   await page.evaluate(()=>window.qa.remove('1'));
+   const remote=panel.locator('[data-approval-id="1"]');await remote.getByText('Decided elsewhere',{exact:true}).waitFor();
+   await page.evaluate(()=>window.qa.advance(6000));await remote.waitFor({state:'detached'});
+   await page.evaluate(()=>window.qa.advance(4000000));
+   await panel.getByText('Expired',{exact:true}).first().waitFor();
+   assert.equal(await page.locator('.orb-badge').count(),0);
+   assert.equal(await panel.getByRole('button',{name:'Approve',exact:true}).count(),0);
+   await page.evaluate(()=>window.qa.advance(4003000));
+   await page.waitForFunction(()=>document.querySelectorAll('.bit-panel .approval-card').length===0);
+  }finally{await page.close();}
  }
 });

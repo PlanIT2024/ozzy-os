@@ -1,0 +1,12 @@
+{
+  "name": "bitos-browser-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test bit-panel.browser.mjs",
+    "install:browsers": "playwright install chromium webkit"
+  },
+  "devDependencies": {
+    "playwright": "1.61.1"
+  }
+}

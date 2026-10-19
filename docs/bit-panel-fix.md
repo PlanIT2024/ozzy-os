@@ -21,9 +21,9 @@ Before screenshots and measurements:
 
 ## Automated proof
 
-`npm run test:browser --prefix apps/dashboard` starts an isolated Vite server and runs Playwright against the real components with 80 deterministic pending approvals. The client module is replaced with an offline fixture: no credentials or hosted data are needed, and no approvals/tasks are written. Playwright is pinned as a dev dependency. Fixtures are not imported by the production entry point.
+`npm run test:browser --prefix apps/dashboard` starts an isolated Vite server and runs Playwright against the real components with 80 deterministic pending approvals. The client module is replaced with an offline fixture: no credentials or hosted data are needed, and no approvals/tasks are written. Playwright is pinned in the isolated `tools/dashboard-browser` package; it is absent from the Pages dashboard dependency tree. Fixtures are not imported by the production entry point.
 
-Install the test browser once from `apps/dashboard` with `npx playwright install chromium`. To include WebKit, install it with `npx playwright install webkit`, ensure its OS dependencies are available, and run `BIT_PANEL_WEBKIT=1 npm run test:browser`. `BIT_PANEL_PROOF_DIR` optionally writes screenshots and bounds to an existing directory.
+Install the local test dependencies with `npm ci --prefix tools/dashboard-browser`, then browsers with `npm run install:browsers --prefix tools/dashboard-browser`. Ensure browser OS dependencies are available. Run Chromium with `npm run test:browser --prefix apps/dashboard`, or both engines with `BIT_PANEL_WEBKIT=1 npm run test:browser --prefix apps/dashboard`. `BIT_PANEL_PROOF_DIR` optionally writes screenshots and bounds to an existing directory.
 
 All five browser scenarios passed in **both Chromium and WebKit**, including mobile/touch contexts. They verify:
 

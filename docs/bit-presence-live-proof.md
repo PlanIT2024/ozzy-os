@@ -106,3 +106,15 @@ After pushing, inspect the Cloudflare Pages check on the new main commit. Only a
 ## Mobile panel regression
 
 The offscreen presence panel was reproduced at 320px and 390px and replaced with a safe-area-aware mobile sheet plus a clamped desktop dialog. See `docs/bit-panel-fix.md` for before/after screenshots, bounds and the automated Chromium/WebKit regression tests. Presence permissions and backend behavior are unchanged by this UI fix.
+
+## Orb approvals and Pages dependency isolation (2026-10-19)
+
+The header orb now displays the live pending count and opens urgent-first approval cards above presence details. `ApprovalCard.tsx` is shared with the existing Approvals section. Both receive the single `App.tsx` decision handler: the existing authenticated update, guarded by approval id and pending status, using `decisionPayload`. Owner gating, repeat-click command confirmation, busy state and duplicate-submit protection are preserved. No schema, policies, service permissions or grant limits change.
+
+Realtime continues through the existing dashboard subscription and reload. Expired/decided cards lose their controls immediately, briefly show their final status, then disappear after two seconds of the dashboard clock. If a row disappears from the pending-only query, its final decision is unavailable, so the panel says “Decided elsewhere.” The badge excludes expired/decided rows immediately; offline presence still takes priority. Switching workspace/account remounts presence to clear transient cards.
+
+Local verification: 25 dashboard unit tests, 251 repository tests, and eight browser scenarios passed (Chromium and WebKit). Browser scenarios cover both decision surfaces, command confirmation, denial, urgent ordering, folder/lease/machine detail, remote decisions and removals, expiry, and panel bounds at 320/390/768/1280. These use deterministic local data and never decide a hosted approval.
+
+Playwright moved to `tools/dashboard-browser` with its own lockfile. Pages installs only the dashboard package; its lockfile has no Playwright runtime dependency, and its build never launches or installs browsers. A fresh copy without root dependencies or environment files passed `npm ci` and `npm run build`, resolving `shared/bit-orb` through the existing relative import. GitHub reports the previous 21fd8f4 Pages build failed, but the private install log was not supplied, so its root cause remains unconfirmed.
+
+Phone/desktop acceptance: open the same workspace on both devices, start a MacBook run from its task, then tap bIT when the approval badge appears. Verify the same request appears in the Approvals section, including folder, machine and lease. Approve a run from the sheet and deny another from the Approvals section. Both devices should remove the pending badge/card after realtime refresh; command approvals still require a second confirmation click. No Discord steps are needed. Chat, screen and control tests remain deferred until dashboard controls exist.
