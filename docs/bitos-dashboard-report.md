@@ -17,6 +17,7 @@ Verified with `npm view <package> time --json` on 2026-10-12. All selected relea
 | react | 19.3.0 | 2026-09-09T17:21:30.071Z |
 | react-dom | 19.3.0 | 2026-09-09T17:17:39.744Z |
 | @supabase/supabase-js | 2.117.2 | 2026-09-25T10:08:51.684Z |
+| @types/node | 26.6.3 | 2026-09-25T22:06:16.779Z |
 | @types/react | 19.3.0 | 2026-09-09T18:08:49.750Z |
 | @types/react-dom | 19.3.0 | 2026-09-09T18:07:51.886Z |
 | typescript | 5.9.3 | 2025-09-30T21:19:38.784Z |
@@ -68,3 +69,11 @@ The script checks anonymous nodes/tasks/workspaces each return zero rows; authen
 ## npm audit (follow-up, 2026-10-12)
 
 `cd apps/dashboard && npm audit --json` reports **1 low**, **0 moderate**, **0 high**, **0 critical** vulnerabilities; it exits 1 because a finding is present. The affected transitive development dependency is `esbuild` 0.27.7. Advisory [GHSA-g7r4-m6w7-qqqr](https://github.com/advisories/GHSA-g7r4-m6w7-qqqr), “esbuild allows arbitrary file read when running the development server on Windows,” covers `>=0.27.3 <0.28.1`. npm reports a fix is available. No audit fixes were applied.
+
+## Pre-chat sheet polish (2026-10-19)
+
+Rechecked `npm view @types/node time --json`: 26.6.3 was published 2026-09-25T22:06:16.779Z, before the October 5 cutoff for the 14-day rule on October 19. The exact pin is retained. Registry metadata: https://registry.npmjs.org/@types%2fnode.
+
+The existing ApprovalCard previews four rendered lines of the full run prompt or action detail, with Show more/Show less, and displays approval expiry as m:ss left. Current activity sits below Pending approvals in the existing BitPanel sheet. Active dispatched/running runs show the task title, machine, elapsed time, View live log and the owner-gated Stop button. Both stop surfaces call the extracted existing stopAgentRun update; no approval or new write path is introduced. View live log closes the sheet and opens/focuses the existing task log section.
+
+Elapsed time is explicitly “since requested” because agent_runs exposes created_at but has no execution-start timestamp. Empty watching text is omitted; actual watching machines are still listed. The existing “Pending approvals” casing is retained. Chat content will follow Current activity in this same sheet.

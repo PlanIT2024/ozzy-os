@@ -12,6 +12,10 @@ export function RunForm({ task, nodes, user, now, submit, busy }: { task: Task; 
 export function RunList({ runs, nodes, user, busy, stop }: { runs: Run[]; nodes: Node[]; user: string; busy: boolean; stop: (run: Run) => Promise<void> }) {
  return <section><h2>Runs</h2>{runs.map(r => <article key={r.id}><span className="pill">{r.status}</span><p>{r.executor} · {nodes.find(n => n.id === r.node_id)?.name || 'Unknown machine'} · {r.lease_minutes} min</p>{r.branch && <p>Branch: {r.branch}</p>}{['done', 'failed', 'stopped', 'expired', 'denied'].includes(r.status) && <p className="plain">{r.summary || 'No summary'}</p>}{canStop(r, nodes, user) && <button disabled={busy || r.stop_requested} onClick={() => void stop(r)}>{r.stop_requested ? 'Stopping…' : 'Stop'}</button>}</article>)}{!runs.length && <p>No runs yet.</p>}</section>;
 }
+// Shared by the task panel and bIT's current-activity section.
+export function stopAgentRun(mutate: (action: () => PromiseLike<{error: {message: string} | null}>) => Promise<void>, run: Run) {
+ return mutate(() => supabase!.from('agent_runs').update(stopPayload()).eq('id', run.id));
+}
 export function TaskRuns({ task, nodes, user, runs, now, busy, mutate }: { task: Task; nodes: Node[]; user: string; runs: Run[]; now: number; busy: boolean; mutate: (action: () => PromiseLike<{ error: { message: string } | null }>) => Promise<void> }) {
  const [events, setEvents] = useState<Event[]>([]), [error, setError] = useState('');
  const log = useRef<HTMLDivElement>(null), follow = useRef(true);
@@ -23,5 +27,5 @@ export function TaskRuns({ task, nodes, user, runs, now, busy, mutate }: { task:
   void load(); return () => { active = false; revision++; void client.removeChannel(channel); };
  }, [task.id, user]);
  useEffect(() => { if (follow.current && log.current) log.current.scrollTop = log.current.scrollHeight; }, [events]);
- return <><RunForm {...{ task, nodes, user, now, busy }} submit={payload => mutate(() => supabase!.from('agent_runs').insert(payload))} /><RunList {...{ runs, nodes, user, busy }} stop={run => mutate(() => supabase!.from('agent_runs').update(stopPayload()).eq('id', run.id))} /><section><h2>Live log</h2>{error && <p role="alert">{error}</p>}<div className="live-log" ref={log} onScroll={() => { const el = log.current!; follow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 30; }}>{events.map(e => <p key={e.id}><time>{new Date(e.created_at).toLocaleTimeString()}</time> <strong>{e.kind}</strong> <span className="plain">{e.summary || 'No summary'}</span></p>)}{!events.length && <p>No events yet.</p>}</div></section></>;
+ return <><RunForm {...{ task, nodes, user, now, busy }} submit={payload => mutate(() => supabase!.from('agent_runs').insert(payload))} /><RunList {...{ runs, nodes, user, busy }} stop={run => stopAgentRun(mutate, run)} /><section id={`task-log-${task.id}`} tabIndex={-1}><h2>Live log</h2>{error && <p role="alert">{error}</p>}<div className="live-log" ref={log} onScroll={() => { const el = log.current!; follow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 30; }}>{events.map(e => <p key={e.id}><time>{new Date(e.created_at).toLocaleTimeString()}</time> <strong>{e.kind}</strong> <span className="plain">{e.summary || 'No summary'}</span></p>)}{!events.length && <p>No events yet.</p>}</div></section></>;
 }

@@ -15,3 +15,8 @@
 .panel-approvals { margin: 12px 0; padding: 0; }
 .approval-card { overflow-wrap: anywhere; }
 .approval-card code { white-space: pre-wrap; }
+
+.approval-preview { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+.approval-detail .plain { margin-bottom: 4px; }
+.detail-toggle { font-size: .85rem; }
+.bit-panel-body article > a { display: inline-block; margin: 0 12px 12px 0; }

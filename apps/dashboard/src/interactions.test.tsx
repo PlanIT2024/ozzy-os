@@ -10,7 +10,7 @@ vi.mock('react', async importOriginal => ({ ...await importOriginal<typeof impor
 vi.mock('./client', () => ({ supabase: db }));
 import { ProjectName } from './App';
 import { Approvals } from './Approvals';
-import { TaskRuns, RunForm, RunList } from './TaskRuns';
+import { TaskRuns, RunForm, RunList, stopAgentRun } from './TaskRuns';
 import type { Approval, Node, Task } from './model';
 const now = Date.parse('2026-10-15T12:00:00Z');
 const node = { id: 'n', owner_id: 'owner', name: 'MACBOOK' } as Node;
@@ -27,7 +27,7 @@ function card(a: Approval, decide: (a: Approval, status: 'approved' | 'denied') 
  const child = elements(tree).find(e => typeof e.type === 'function')!;
  return (child.type as (props: unknown) => ReactElement)(child.props);
 }
-const buttons = (el: unknown) => elements(el).filter(e => e.type === 'button');
+const buttons = (el: unknown) => elements(el).filter(e => e.type === 'button' && e.props.className !== 'detail-toggle');
 beforeEach(() => { hooks.values = []; hooks.cursor = 0; hooks.effects = []; vi.clearAllMocks(); vi.useRealTimers(); });
 it('actual command handlers require confirmation and block both decisions while sending', async () => {
  vi.useFakeTimers(); vi.setSystemTime(now);
@@ -106,4 +106,12 @@ it('commandExecution detail requires a second click', async () => {
  const decide=vi.fn(async()=>{});
  await (buttons(card(a,decide))[0].props.onClick as ()=>Promise<void>)();expect(decide).not.toHaveBeenCalled();
  await (buttons(card(a,decide))[0].props.onClick as ()=>Promise<void>)();expect(decide).toHaveBeenCalledWith(a,'approved');
+});
+
+it('current activity and task runs share the existing stop update without approval', async () => {
+ const query={update:vi.fn().mockReturnThis(),eq:vi.fn().mockResolvedValue({error:null})};db.from.mockReturnValue(query);
+ const mutate=vi.fn(async(action:()=>PromiseLike<{error:{message:string}|null}>)=>{await action();});
+ await stopAgentRun(mutate,{id:'run-id'} as import('./model').Run);
+ expect(mutate).toHaveBeenCalledTimes(1);expect(db.from).toHaveBeenCalledWith('agent_runs');
+ expect(query.update).toHaveBeenCalledWith({stop_requested:true});expect(query.eq).toHaveBeenCalledWith('id','run-id');
 });

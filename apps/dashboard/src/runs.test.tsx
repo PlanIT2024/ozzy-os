@@ -25,10 +25,10 @@ it('inserts exactly the CLI run fields with the current task and user', () => {
  expect(runPayload('uuid', 't', 'n', 'codex', 'sandbox', 'Prompt', 20, 'owner')).toEqual({ id: 'uuid', task_id: 't', node_id: 'n', executor: 'codex', folder_alias: 'sandbox', prompt: 'Prompt', lease_minutes: 20, status: 'requested', requested_by: 'owner' });
 });
 it('shows owner decisions, but no buttons for non-owners or expired approvals', () => {
- expect(cards()).toContain('>Approve<'); expect(cards()).toContain('>Deny<'); expect(cards()).toContain('60s remaining');
- expect(cards(approval, 'member')).toContain('Waiting for MACBOOK owner'); expect(cards(approval, 'member')).not.toContain('<button');
- expect(cards(approval, 'owner', now + 60000)).toContain('Expired'); expect(cards(approval, 'owner', now + 60000)).not.toContain('<button');
- expect(cards({ ...approval, expires_at: 'invalid' })).not.toContain('<button');
+ expect(cards()).toContain('>Approve<'); expect(cards()).toContain('>Deny<'); expect(cards()).toContain('1:00 left');
+ expect(cards(approval, 'member')).toContain('Waiting for MACBOOK owner'); expect(cards(approval, 'member')).not.toContain('>Approve<');
+ expect(cards(approval, 'owner', now + 60000)).toContain('Expired'); expect(cards(approval, 'owner', now + 60000)).not.toContain('>Approve<');
+ expect(cards({ ...approval, expires_at: 'invalid' })).not.toContain('>Approve<');
  const busy = render(<Approvals approvals={[approval]} nodes={[node]} user="owner" now={now} busy />); expect(busy.match(/disabled=""/g)).toHaveLength(2);
 });
 it('renders readable run and agent details and detects shell approval variants', () => {

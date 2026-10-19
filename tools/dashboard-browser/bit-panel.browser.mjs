@@ -75,6 +75,7 @@ for (const width of [320, 390, 768, 1280]) test(`panel bounds, scrolling and dis
    }
    await page.locator('.bit-panel-body').evaluate(el => { el.scrollTop = el.scrollHeight; });
    await page.waitForFunction(() => { const el = document.querySelector('.bit-panel-body'); return el.scrollTop + el.clientHeight >= el.scrollHeight - 1; });
+   await page.getByRole('dialog').getByText('Approval 80: visible scrolling content', { exact: true }).scrollIntoViewIfNeeded();
    const last = await page.getByRole('dialog').getByText('Approval 80: visible scrolling content', { exact: true }).boundingBox();
    const box = await page.getByRole('dialog').boundingBox();
    assert.ok(last.y >= box.y && last.y + last.height <= box.y + box.height, 'last content is visible after scrolling');
@@ -138,7 +139,7 @@ for (const status of ['approved','denied']) test(`panel and Approvals share ${st
    }
    await page.waitForFunction(()=>window.decisions.length===1);
    assert.deepEqual(await page.evaluate(()=>window.decisions),[{id:'0',status}]);
-   assert.equal(await card.getByRole('button').count(),0);
+   assert.equal(await card.getByRole('button',{name:/^(Approve|Deny)$/}).count(),0);
    assert.ok(await card.getByText(status==='approved'?'Approved':'Denied',{exact:true}).count());
    if(surface==='panel'){
     await page.evaluate(()=>window.qa.advance(3000));
@@ -173,6 +174,35 @@ test('panel orders urgency, shows run details, and removes remotely decided and 
    assert.equal(await panel.getByRole('button',{name:'Approve',exact:true}).count(),0);
    await page.evaluate(()=>window.qa.advance(4003000));
    await page.waitForFunction(()=>document.querySelectorAll('.bit-panel .approval-card').length===0);
+  }finally{await page.close();}
+ }
+});
+
+test('approval preview expands and active activity uses live-log and stop callbacks',async()=>{
+ for(const {browser} of browsers){
+  const page=await ready(browser,390,844);
+  try{
+   await page.evaluate(()=>window.qa.longPrompt());
+   const trigger=page.getByRole('button',{name:'Show bIT presence'});await trigger.click();
+   const panel=page.getByRole('dialog'), card=panel.locator('[data-approval-id="0"]');
+   await card.getByText('60:00 left',{exact:true}).waitFor();
+   const preview=card.locator('.approval-preview');const before=await preview.evaluate(el=>el.clientHeight);
+   await card.getByRole('button',{name:'Show more',exact:true}).click();
+   assert.ok(await card.locator('.approval-detail .plain').evaluate(el=>el.clientHeight)>before);
+   await card.getByText('last prompt line',{exact:false}).waitFor();
+   await card.getByRole('button',{name:'Show less',exact:true}).click();
+   assert.ok(await preview.count());
+   const activity=panel.getByRole('region',{name:'Current activity'});
+   await activity.getByText('QA task title',{exact:true}).waitFor();
+   await activity.getByText('MacBook · Elapsed: 0:00 since requested',{exact:true}).waitFor();
+   assert.equal(await panel.getByText('No machines being watched',{exact:true}).count(),0);
+   await activity.getByRole('button',{name:'Stop',exact:true}).click();
+   await activity.getByRole('button',{name:'Stopping…',exact:true}).waitFor();
+   assert.deepEqual(await page.evaluate(()=>window.stops),['run']);
+   assert.equal(await activity.getByRole('button',{name:'Stopping…',exact:true}).isDisabled(),true);
+   await activity.getByRole('link',{name:'View live log'}).click();
+   await panel.waitFor({state:'detached'});
+   assert.equal(await page.evaluate(()=>window.viewedTask),'task');
   }finally{await page.close();}
  }
 });
