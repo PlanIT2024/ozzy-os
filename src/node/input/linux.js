@@ -94,6 +94,6 @@ export class LinuxInput extends EventEmitter {
   act(action){return this.request('action',action);}
   async releaseAll(){if(this.child && !this.child.killed)await this.request('release',{},2000);}
   async stop(){const child=this.child;if(!child)return;this.child=null;
-    child.kill('SIGTERM');await new Promise(resolve=>{const timer=setTimeout(()=>{child.kill('SIGKILL');resolve();},3000);child.once('exit',()=>{clearTimeout(timer);resolve();});});
+    child.kill('SIGTERM');await new Promise(resolve=>{const timer=setTimeout(()=>{child.kill('SIGKILL');resolve();},1000);child.once('exit',()=>{clearTimeout(timer);resolve();});});
   }
 }

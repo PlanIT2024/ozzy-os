@@ -1,3 +1,4 @@
+import { NodeGrants } from './grants/index.js';
 import { AgentBridge } from './agent/bridge.js';
 import { createInput } from './input/index.js';
 import { createScreen } from './screen/index.js';
@@ -26,11 +27,14 @@ export async function machineStatus() {
   const [cpu, memory, disks, battery, users, version] = await Promise.all([si.currentLoad(), si.mem(), si.fsSize(), si.battery(), si.users(), si.osInfo()]);
   return { uptime: os.uptime(), cpu: { loadPercent: cpu.currentLoad, cores: os.cpus().length }, memory: { total: memory.total, used: memory.active, available: memory.available }, disks: usableDisks(disks).map(d => ({ mount: d.mount, size: d.size, used: d.used, usePercent: d.use })), battery: battery.hasBattery ? { percent: battery.percent, charging: battery.isCharging, remainingMinutes: battery.timeRemaining } : null, users: [...new Set(users.map(u => u.user))], processUser: os.userInfo().username, os: { platform: version.platform, distro: version.distro, release: version.release, kernel: version.kernel } };
 }
-export function startNode({ transport = process.env.NODE_TRANSPORT || 'local', url = transport === 'relay' ? process.env.RELAY_URL : process.env.BRAIN_URL || 'ws://127.0.0.1:8787', token = transport === 'relay' ? process.env.NODE_RELAY_TOKEN || process.env.RELAY_TOKEN : process.env.NODE_TOKEN, machine = process.env.MACHINE_NAME, key = loadKey(process.env.NODE_KEY_FILE || path.join(ROOT, 'data/keys/node.json')), brainKey = decodePublic(process.env.BRAIN_PUBLIC_KEY), heartbeat = 30000, status = machineStatus, log = console.log, Socket = WebSocket, retry = 1000, screen = createScreen({ log }), input = createInput({ screen, log }), capabilityInterval = 15000, agents = new AgentBridge(), Relay = RelayClient, handshakeMs = 10000 } = {}) {
+export function startNode({ transport = process.env.NODE_TRANSPORT || 'local', url = transport === 'relay' ? process.env.RELAY_URL : process.env.BRAIN_URL || 'ws://127.0.0.1:8787', token = transport === 'relay' ? process.env.NODE_RELAY_TOKEN || process.env.RELAY_TOKEN : process.env.NODE_TOKEN, machine = process.env.MACHINE_NAME, key = loadKey(process.env.NODE_KEY_FILE || path.join(ROOT, 'data/keys/node.json')), brainKey = decodePublic(process.env.BRAIN_PUBLIC_KEY), heartbeat = 30000, status = machineStatus, log = console.log, Socket = WebSocket, retry = 1000, screen = createScreen({ log }), input = createInput({ screen, log }), capabilityInterval = 15000, agents = new AgentBridge(), Relay = RelayClient, handshakeMs = 10000, grants = new NodeGrants() } = {}) {
   required({ TOKEN: token, MACHINE_NAME: machine }, ['TOKEN', 'MACHINE_NAME']);
   if (!['local', 'relay'].includes(transport) || canonical(machine) === 'brain') throw new Error('Invalid transport or machine name');
   if (transport === 'local' && !['127.0.0.1', 'localhost', '[::1]'].includes(new URL(url).hostname)) throw new Error('Local transport must use loopback');
   const events = new EventEmitter();
+  input.grants = grants;
+  grants.on('revoked', g => { if(input.session?.screenGrantId===g.grantId)void input.stop(g.reason,true); if(peer?.state==='open')try{peer.send({type:'access_closed',...g});}catch{} });
+  grants.on('stop', reason => {void input.stop?.(reason,true);});
   let ws, relay, peer, reconnect, pulse, handshakeTimer, stopped = false, connected = false, attempt = 0, busy = false, screenAvailable = false, inputAvailable = false, checkingScreen = false, agentAvailable = agents.available();
   let screenCapturing = false;
   const captureState = () => ({ screen: screenCapturing, input: input.capturing === true });
@@ -59,7 +63,16 @@ export function startNode({ transport = process.env.NODE_TRANSPORT || 'local', u
         catch (error) { sendResult({ ok: false, error: error.message }); }
         return;
       }
-      if (m.method === 'input_stop') { if (!input.session || m.params?.grantId === input.session.grantId) await input.stop(m.params?.revoke === false ? 'runtime suspended' : 'owner off', m.params?.revoke !== false); return sendResult({ ok: true, result: { stopped: true } }); }
+      if (m.method?.startsWith('grants.')) {
+        try {let result;
+          if(m.method==='grants.capabilities')result=grants.capabilities();
+          else if(m.method==='grants.start'){result=await grants.start(m.params||{},()=>screen.available());}
+          else if(m.method==='grants.stop'){const g=grants.entries.get(m.params?.grantId);if(g&&g.conversationKey!==m.params?.conversationKey)throw Error('Wrong grant scope');grants.revoke(m.params?.grantId,'owner stop');result={stopped:true};}
+          else if(m.method==='grants.check')result={active:true,...grants.validate(m.params||{})};
+          else throw Error('Unsupported grants method');sendResult({ok:true,result});
+        }catch(error){sendResult({ok:false,error:error.message});}return;
+      }
+      if (m.method === 'input_stop') { if(input.session&&input.session.conversationKey!==m.params?.conversationKey)return sendResult({ok:false,error:'Control scope mismatch'}); if (!input.session || m.params?.grantId === input.session.grantId) await input.stop(m.params?.revoke === false ? 'runtime suspended' : 'owner off', m.params?.revoke !== false); return sendResult({ ok: true, result: { stopped: true } }); }
       if (!['status', 'screen','input_start','input_action','input_focus','input_resolve_app'].includes(m.method)) return sendResult({ ok: false, error: 'Unsupported method' });
       if (m.method === 'screen') log('screen capture attempt stage=node_request');
       if (m.method === 'screen' && !await screen.available({ diagnose: true })) { log('screen capture failure stage=availability'); return sendResult({ ok: false, error: 'Screen capture disabled or graphical session unavailable' }); }
@@ -67,7 +80,7 @@ export function startNode({ transport = process.env.NODE_TRANSPORT || 'local', u
       busy = true;
       try {
         let result;
-        if (m.method === 'screen') { screenCapturing = true; reportCapture(); result = await screen.capture(); input.observe(result); }
+        if (m.method === 'screen') { grants.validate(m.params||{}); screenCapturing = true; reportCapture(); result = await screen.capture(); grants.validate(m.params||{}); grants.used(m.params||{}); input.observe(result); }
         else if (m.method === 'input_start') result = await input.start(m.params || {});
         else if (m.method === 'input_resolve_app') result = await input.resolveApp(m.params || {});
         else if (m.method === 'input_focus') result = await input.inspect(m.params || {});
@@ -121,7 +134,7 @@ export function startNode({ transport = process.env.NODE_TRANSPORT || 'local', u
   }
   const capabilityTimer = setInterval(() => { void refreshScreen(); }, capabilityInterval); capabilityTimer.unref();
   void refreshScreen();
-  function stop(reason = 'node_shutdown') { if (stopped) return; stopped = true; log(`bit-node ${machine} stopping reason=${reason}`); void agents.close(); clearInterval(capabilityTimer); screen.close(); void input.close(); clearTimeout(reconnect); clearPeer(); relay?.close(); ws?.terminate(); }
+  function stop(reason = 'node_shutdown') { if (stopped) return; stopped = true; log(`bit-node ${machine} stopping reason=${reason}`); void agents.close(); clearInterval(capabilityTimer); grants.close(); screen.close(); void input.close(); clearTimeout(reconnect); clearPeer(); relay?.close(); ws?.terminate(); }
   if (transport === 'relay') {
     relay = new Relay({ url, token, name: machine, log, retry });
     relay.on('frame', receive);

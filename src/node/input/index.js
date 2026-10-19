@@ -21,21 +21,25 @@ export class InputControl extends EventEmitter {
   save() { try { saveJSON(this.file,this.state); } catch { this.faulted=true; throw new Error('Control state persistence failed'); } }
   async available() { return !this.faulted && this.enabled && await this.screen.available() && await this.backend.available(); }
   observe(frame) { this.frame = { original: frame.original, scaled: frame.scaled, monitors: frame.monitors, capturedAt: frame.capturedAt }; }
-  async start({ grantId, expiresAt, maxActions }) {
+  async start({ grantId, expiresAt, maxActions, screenGrantId, conversationKey }) {
     if (this.enabled && this.backend instanceof UnsupportedInput) return this.backend.start();
     if (!this.enabled || !await this.available()) throw new Error('Input capability unavailable');
+    if(this.grants){const screen=this.grants.validate({grantId:screenGrantId,conversationKey},true);if(Date.parse(expiresAt)>Date.parse(screen.expiresAt))throw Error('Control exceeds screen expiry');}
     if (typeof grantId !== 'string' || !/^[a-zA-Z0-9-]{1,80}$/.test(grantId) || !Number.isFinite(Date.parse(expiresAt)) || Date.parse(expiresAt) <= this.now() || Date.parse(expiresAt) > this.now()+600000 || !Number.isInteger(maxActions) || maxActions < 1) throw new Error('Invalid control grant');
     if (this.state.grants[grantId]?.revoked) throw new Error('Node control session was revoked');
+    if (this.session?.grantId === grantId && (this.session.screenGrantId!==screenGrantId||this.session.conversationKey!==conversationKey))throw Error('Control scope mismatch');
     if (this.session?.grantId === grantId) return { started: true, grantId, newSession: false };
     await this.stop('replaced');
     const state = Object.hasOwn(this.state.grants,grantId) ? this.state.grants[grantId] : (this.state.grants[grantId] = { count: 0, last: 0 });
+    if(this.grants&&state.conversationKey&&(state.conversationKey!==conversationKey||state.screenGrantId!==screenGrantId))throw Error('Persisted control scope mismatch');
+    if(this.grants){state.conversationKey=conversationKey;state.screenGrantId=screenGrantId;}
     state.expiresAt ||= expiresAt;
     state.maxActions = Math.min(state.maxActions ?? this.cap, this.cap, maxActions);
     expiresAt = new Date(Math.min(Date.parse(state.expiresAt), Date.parse(expiresAt))).toISOString();
     state.expiresAt = expiresAt;
     if (Date.parse(expiresAt) <= this.now() || state.count >= state.maxActions) throw new Error('Control grant expired or capped at node');
     this.save();
-    this.session = { grantId, expiresAt, maxActions: state.maxActions, state };
+    this.session = { grantId, expiresAt, screenGrantId, conversationKey, maxActions: state.maxActions, state };
     this.log(`input start ${JSON.stringify({grantId,expiresAt,maxActions:this.session.maxActions})}`);
     this.timer = setTimeout(() => { void this.stop('expired', true); }, Date.parse(expiresAt)-this.now()); this.timer.unref?.();
     try { await this.backend.start(); }
@@ -44,7 +48,9 @@ export class InputControl extends EventEmitter {
     this.capturing = true; this.emit('capture');
     return { started: true, grantId, newSession: true };
   }
+  checkScope(raw) {if(this.grants){if(raw.conversationKey!==this.session?.conversationKey)throw Error('Control scope mismatch');this.grants.validate({grantId:this.session?.screenGrantId,conversationKey:raw.conversationKey},true);}}
   async inspect(raw = {}) {
+    this.checkScope(raw);
     if (!this.session || raw.grantId !== this.session.grantId || this.now() >= Date.parse(this.session.expiresAt) || !await this.available()) throw new Error('Control focus unavailable');
     const action = validateAction(raw);
     if(shellSuper(action)&&this.session.state.lastInput==='super')throw new Error('Control refused a consecutive Super press before approval; use launch_app instead');
@@ -55,6 +61,7 @@ export class InputControl extends EventEmitter {
     return result;
   }
   async resolveApp(raw){
+    this.checkScope(raw);
     if(!this.session||raw.grantId!==this.session.grantId||this.now()>=Date.parse(this.session.expiresAt)||this.session.state.count>=this.session.maxActions||!await this.available())throw new Error('Control unavailable for app launch');
     return this.backend.resolveApp(validateAction({action:'launch_app',app:raw.app}).app);
   }
@@ -63,6 +70,7 @@ export class InputControl extends EventEmitter {
     const keyboard=['type','key'].includes(raw?.action);
     let delivery=keyboard?deliveryPlan(raw):undefined,dispatched=false;
     try {
+      this.checkScope(raw);
       const action = validateAction(raw, { screenshot: false });
       this.log(`input action ${JSON.stringify(actionLog(action,this.logText))}`);
       const s = this.session;
@@ -104,7 +112,7 @@ export class InputControl extends EventEmitter {
     const s = this.session; this.session = null; clearTimeout(this.timer); this.frame = null;
     if (s && revoke) { s.state.revoked = true; try { this.save(); } catch { this.log('input failure stage=persist_revocation; capability disabled'); } }
     if (s) { this.log(`input ended ${JSON.stringify({grantId:s.grantId,reason,count:s.state.count})}`); this.emit('closed',{grantId:s.grantId,reason,count:s.state.count,delivery:['action failure','action cap'].includes(reason)&&validDelivery(s.state.lastDelivery)?s.state.lastDelivery:undefined}); }
-    await this.backend.releaseAll().catch(()=>{}); await this.backend.stop().catch(()=>{});
+    await Promise.allSettled([this.backend.releaseAll(),this.backend.stop()]);
     this.capturing = false; this.emit('capture');
   }
   async close() { await this.stop('disconnect'); }

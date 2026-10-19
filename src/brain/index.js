@@ -1,3 +1,4 @@
+import { startAccess } from './access.js';
 import { startDashboardChat } from './dashboardChat.js';
 import { PresenceHub, observeSync } from './presence.js';
 import { startPresenceMirror } from './presenceMirror.js';
@@ -17,10 +18,10 @@ export async function runBrain({ root = ROOT, env = process.env, runtime = proce
   makeHub = options => new NodeHub(options), makeBudget = () => new Budget(),
   makeGrowth = options => new Growth(options), makeRunner, makeDiscord, makeSync = startBrainSync, makeScheduler = options => new Scheduler(options), makeReminders = options => new Reminders(options) } = {}) {
   const presence = new PresenceHub();
-  let presenceMirror, dashboardChat;
+  let presenceMirror, dashboardChat, access;
   let unlock = () => {}, hub, runner, discord, growth, scheduler, reminders, sync, dispatch;
   async function cleanup() {
-    try { dashboardChat?.close(); presenceMirror?.close(); presence.close(); dispatch?.close(); scheduler?.close(); reminders?.close(); await runner?.close(); await growth?.close(); }
+    try { access?.close(); dashboardChat?.close(); presenceMirror?.close(); presence.close(); dispatch?.close(); scheduler?.close(); reminders?.close(); await runner?.close(); await growth?.close(); }
     finally { try { discord?.close(); } finally { try { await hub?.close(); } finally { await sync?.close(); unlock(); } } }
   }
   try {
@@ -43,6 +44,7 @@ export async function runBrain({ root = ROOT, env = process.env, runtime = proce
     reminders = makeReminders({ root, timezone: env.TZ || 'America/New_York', deliver: (reminder, context) => (presence.react('curious'), discord.deliverReminder(reminder, context)) });
     scheduler = makeScheduler({ root, timezone: env.TZ || 'America/New_York', execute: (job, context) => discord.runScheduled(job, context) });
     runner = makeRunner({ presence, hub, budget, root, growth, reminders, sync });
+    access=startAccess({root,env:dispatchSettings,hub,runner});runner.access=access;void access?.ready.catch(()=>console.warn('Dashboard access unavailable; check migration 0009.'));
     dashboardChat = startDashboardChat({root,env:dispatchSettings,runner,presence});
     void dashboardChat.ready.catch(() => console.warn('Dashboard chat unavailable; check migration 0007.'));
     discord = makeDiscord({ runner, hub, budget, scheduler, reminders, env, sync }); await discord.start();

@@ -9,6 +9,7 @@ vi.mock('react', async importOriginal => ({ ...await importOriginal<typeof impor
 }));
 vi.mock('./client', () => ({ supabase: db }));
 import { ProjectName } from './App';
+import { ApprovalCard } from './ApprovalCard';
 import { Approvals } from './Approvals';
 import { TaskRuns, RunForm, RunList, stopAgentRun } from './TaskRuns';
 import type { Approval, Node, Task } from './model';
@@ -114,4 +115,22 @@ it('current activity and task runs share the existing stop update without approv
  await stopAgentRun(mutate,{id:'run-id'} as import('./model').Run);
  expect(mutate).toHaveBeenCalledTimes(1);expect(db.from).toHaveBeenCalledWith('agent_runs');
  expect(query.update).toHaveBeenCalledWith({stop_requested:true});expect(query.eq).toHaveBeenCalledWith('id','run-id');
+});
+
+it('control grants confirm by kind, cap the picker, and pass only selected minutes',async()=>{
+ vi.useFakeTimers();vi.setSystemTime(now);
+ const machine={...node,metadata:{remote_grants:{screen:true,control:true,screenMinutes:5,controlMinutes:3}}};
+ const a:Approval={...approval,action_summary:'Open the editor',action_detail:{access:true,kind:'control',requested_minutes:10,reason:'Open the editor'}};
+ const decide=vi.fn(async()=>{});
+ const render=()=>{hooks.cursor=0;return ApprovalCard({a,nodes:[machine],runs:[],user:'owner',now,busy:false,decide});};
+ let tree=render();expect(elements(tree).filter(e=>e.type==='option')).toHaveLength(3);
+ (elements(tree).find(e=>e.type==='select')!.props.onChange as (e:unknown)=>void)({target:{value:'2'}});
+ tree=render();await (buttons(tree)[0].props.onClick as ()=>Promise<void>)();expect(decide).not.toHaveBeenCalled();
+ tree=render();expect(buttons(tree)[0].props.children).toBe('Confirm access?');await (buttons(tree)[0].props.onClick as ()=>Promise<void>)();expect(decide).toHaveBeenCalledWith(a,'approved',2);
+});
+it('screen grants use one click and non-owners cannot decide',async()=>{
+ vi.useFakeTimers();vi.setSystemTime(now);const machine={...node,metadata:{remote_grants:{screen:true,control:false,screenMinutes:5,controlMinutes:3}}};
+ const a:Approval={...approval,action_summary:'See the screen',action_detail:{access:true,kind:'screen',requested_minutes:5}};const decide=vi.fn(async()=>{});
+ let tree=ApprovalCard({a,nodes:[machine],runs:[],user:'other',now,busy:false,decide});expect(buttons(tree)).toHaveLength(0);
+ hooks.cursor=0;tree=ApprovalCard({a,nodes:[machine],runs:[],user:'owner',now,busy:false,decide});await (buttons(tree)[0].props.onClick as ()=>Promise<void>)();expect(decide).toHaveBeenCalledWith(a,'approved',5);
 });

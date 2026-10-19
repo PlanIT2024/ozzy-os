@@ -1,7 +1,7 @@
 export const columns = ['inbox', 'planned', 'running', 'waiting_on_you', 'done'] as const;
 export type TaskStatus = typeof columns[number] | 'cancelled';
 export interface Task { id: string; workspace_id: string; title: string; description: string | null; status: TaskStatus; project_id: string | null; goal_id: string | null; node_id: string | null; due_date: string | null; executor?: string; external_ref?: { discord_thread_id?: string } }
-export interface Node { id: string; name: string; os: string | null; capabilities: string[]; status: string; last_seen_at: string | null; owner_id?: string; metadata?: { agent?: { executors: string[]; folders: string[]; maxLeaseMinutes: number } } }
+export interface Node { id: string; name: string; os: string | null; capabilities: string[]; status: string; last_seen_at: string | null; owner_id?: string; metadata?: { remote_grants?:{generation?:number;screen:boolean;control:boolean;screenMinutes:number;controlMinutes:number}; agent?: { executors: string[]; folders: string[]; maxLeaseMinutes: number } } }
 export interface Project { id: string; name: string; status: string }
 export interface Goal { id: string; project_id: string; title: string }
 export interface Approval { id: string; action_summary: string; risk: string; requested_at: string; task_id?: string; node_id?: string; status?: string; expires_at?: string; action_detail?: Record<string, unknown> }

@@ -20,12 +20,13 @@ export function requestedScreenAttachment(prompt) {
   });
 }
 export class ScreenGrants {
-  constructor({ sync = noSync, root = ROOT, now = () => new Date(), timezone = process.env.TZ || 'America/New_York', cap = Number(process.env.BIT_DAILY_SCREEN_CAP ?? 40) } = {}) {
+  constructor({ presence, hub, sync = noSync, root = ROOT, now = () => new Date(), timezone = process.env.TZ || 'America/New_York', cap = Number(process.env.BIT_DAILY_SCREEN_CAP ?? 40) } = {}) {
     if (!Number.isInteger(cap) || cap < 0) throw new Error('Invalid screen cap');
-    Object.assign(this, { sync, root, now, timezone, cap }); this.file = path.join(root, 'data/screens.json');
+    Object.assign(this, { presence, hub, sync, root, now, timezone, cap }); this.file = path.join(root, 'data/screens.json');
     this.state = readJSON(this.file, { grants: {}, days: {} });
     this.auditFile = path.join(root, 'data/audit.log');
   }
+  lease(name,thread,event){if(String(thread).startsWith('dash:')){if(name==='leaseEnded')this.presence?.observe(name,event);}else this.sync[name](event);}
   save() { saveJSON(this.file, this.state); }
   audit({ event = 'screen', machine, time, decision, grantId, approvalId, original, scaled, capturedAt }) {
     fs.mkdirSync(path.dirname(this.auditFile), { recursive: true, mode: 0o700 });
@@ -35,17 +36,18 @@ export class ScreenGrants {
   status() { const day = this.day(); return { day, captures: this.state.days[day] || 0, cap: this.cap }; }
   checkCap() { if (this.status().captures >= this.cap) throw new Error('My screen-look juice is tapped for today, Ozzy. Try again tomorrow.'); }
   reserve() { this.checkCap(); const day = this.day(); this.state.days[day] = (this.state.days[day] || 0) + 1; this.save(); }
-  on(thread, machine) {
+  on(thread, machine, {id=randomUUID(),expiresAt,kind='screen',policyGeneration}={}) {
     machine = canonical(machine);
-    const grant = { id: randomUUID(), machine, issuedAt: this.now().toISOString(), expiresAt: new Date(+this.now() + GRANT_MS).toISOString() };
+    const grant = { id, kind, policyGeneration, machine, issuedAt: this.now().toISOString(), expiresAt: expiresAt || new Date(+this.now() + GRANT_MS).toISOString() };
     const previous = this.state.grants[thread];
-    if (previous && !previous.revokedAt) this.sync.leaseEnded({ id: previous.id, reason: 'replaced' });
+    if (previous && !previous.revokedAt) this.off(thread);
     this.state.grants[thread] = grant; this.save(); this.audit({ event: 'screen_grant', machine, decision: 'on', grantId: grant.id });
-    this.sync.leaseStarted({ ...grant, thread, level: 'watch' }); return grant;
+    this.lease('leaseStarted',thread,{ ...grant, thread, level: 'watch' }); return grant;
   }
   off(thread) {
     const grant = this.state.grants[thread]; if (!grant) return;
-    this.sync.leaseEnded({ id: grant.id, reason: 'user', revokedAt: this.now().toISOString() });
+    this.lease('leaseEnded',thread,{ id: grant.id, reason: 'user', revokedAt: this.now().toISOString() });
+    if(this.hub?.request)void this.hub.request(grant.machine,'grants.stop',{grantId:grant.id,conversationKey:thread}).catch(()=>{});
     grant.revokedAt = this.now().toISOString(); this.save(); this.audit({ event: 'screen_grant', machine: grant.machine, decision: 'off', grantId: grant.id });
   }
   grant(thread) {
@@ -59,9 +61,12 @@ export class ScreenGrants {
     try { const g = this.grant(thread); return `Screen access: ${g.machine} until ${new Intl.DateTimeFormat('en-US', { timeZone: this.timezone, dateStyle: 'medium', timeStyle: 'long' }).format(new Date(g.expiresAt))} · this conversation only.`; }
     catch (error) { return error.message; }
   }
-  context({ hub, thread, scheduled = false, tainted = () => false, approve = async () => false, notify = async () => {}, publish, onCapture = () => {}, attachmentRequested = false }) {
+  async ensureNode(thread,hub=this.hub,kind) {const g=this.grant(thread);return hub.request(g.machine,'grants.start',{grantId:g.id,conversationKey:thread,expiresAt:g.expiresAt,policyGeneration:g.policyGeneration,kind:kind||g.kind||'screen'});}
+  context({ hub, thread, scheduled = false, tainted = () => false, approve = async () => false, notify = async () => {}, publish, onCapture = () => {}, attachmentRequested = false, verify = () => true }) {
+    this.hub ||= hub;
     const receipts = new Map(); let published = false;
     const gate = machine => {
+      if (!verify(machine)) throw new Error('Screen grant is not owner-verified for this conversation');
       if (scheduled) throw new Error('Scheduled jobs cannot capture screens, Ozzy.');
       machine = canonical(machine);
       const grant = this.grant(thread);
@@ -102,8 +107,9 @@ export class ScreenGrants {
             await authorize(machine); receipt = receipts.get(details.machine).shift();
           }
           gate(machine); this.reserve();
-          this.sync.event({ thread, machine: details.machine, kind: 'screenshot', summary: 'Screenshot requested', leaseId: receipt.grant.id });
-          const result = await hub.request(details.machine, 'screen');
+          if(!String(thread).startsWith('dash:'))this.sync.event({ thread, machine: details.machine, kind: 'screenshot', summary: 'Screenshot requested', leaseId: receipt.grant.id });
+          await this.ensureNode(thread,hub);
+          const result = await hub.request(details.machine, 'screen',{grantId:receipt.grant.id,conversationKey:thread});
           const current = gate(machine);
           if (current.grant.id !== receipt.grant.id) throw new Error('Screen grant changed while capturing; image discarded.');
           const buffer = validateCapture(result);
@@ -113,7 +119,7 @@ export class ScreenGrants {
             monitors: result.monitors.map(m => ({ connector: typeof m.connector === 'string' ? m.connector.slice(0,64) : undefined, x: m.x, y: m.y, width: m.width, height: m.height, scale: m.scale, primary: m.primary, coordinateSpace: 'logical' })),
             grantId: receipt.grant.id, approvalId: receipt.approvalId };
           this.audit({ ...metadata, decision: 'captured' });
-          onCapture({ machine: metadata.machine, capturedAt: metadata.capturedAt });
+          await onCapture({ machine: metadata.machine, capturedAt: metadata.capturedAt });
           await notify(`📸 looked at ${details.displayName}'s screen`);
           if (attachmentRequested && publish && !published) { published = true; await publish({ buffer, mimeType: result.mimeType, metadata }); }
           return { content: [{ type: 'text', text: JSON.stringify(metadata) }, { type: 'image', data: result.data, mimeType: result.mimeType }] };

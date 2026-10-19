@@ -319,3 +319,13 @@ test('markdown uses safe markup and streaming has no thinking placeholder',async
   assert.equal(await page.getByRole('heading',{name:'Chat with bIT',exact:true}).count(),1);
  }finally{await page.close();}}
 });
+test('access card duration, kind-based control confirmation and Stop use owner decision columns',async()=>{
+ for(const {browser}of browsers){const page=await chatReady(browser,390);try{
+  await page.evaluate(()=>{window.qa.remotePolicy();const db=window.chatDB;db.tables.access_requests.push({id:'access-test',node_id:'mac',conversation_id:'conversation',workspace_id:'ws',owner_id:'owner',kind:'control',reason:'Open an editor and type hello. Each step needs approval.',requested_minutes:8,expires_at:new Date(Date.now()+60000).toISOString(),status:'pending'});db.notify();});
+  const card=page.locator('[data-approval-id="access-test"]');await card.getByRole('heading',{name:'control access'}).waitFor();const picker=card.getByRole('combobox',{name:'Grant duration'});assert.equal(await picker.locator('option').count(),3);await picker.selectOption('2');
+  await card.getByRole('button',{name:'Approve',exact:true}).click();assert.equal(await page.evaluate(()=>window.chatDB.writes.some(w=>w.table==='access_requests')),false);
+  await card.getByRole('button',{name:'Confirm access?',exact:true}).click();await card.getByText('Approved',{exact:true}).waitFor();const decision=await page.evaluate(()=>window.chatDB.writes.find(w=>w.table==='access_requests').payload);assert.deepEqual(decision,{status:'approved',decided_by:'owner',granted_minutes:2});
+  await page.evaluate(()=>{window.chatDB.tables.access_grants.push({id:'active',node_id:'mac',conversation_id:'conversation',kind:'control',status:'active',expires_at:new Date(Date.now()+120000).toISOString(),stop_requested:false});window.chatDB.notify();});
+  await page.getByRole('button',{name:'Stop access',exact:true}).click();await page.getByRole('button',{name:'Stopping…',exact:true}).waitFor();assert.deepEqual(await page.evaluate(()=>window.chatDB.writes.find(w=>w.table==='access_grants').payload),{stop_requested:true});
+ }finally{await page.close();}}
+});

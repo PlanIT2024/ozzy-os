@@ -12,7 +12,7 @@ export const EXPRESS_TOOL = 'mcp__presence__express';
 export const CUSTOM = [EXPRESS_TOOL, 'mcp__machines__list_machines', 'mcp__machines__machine_status', 'mcp__reminders__set_reminder', 'mcp__reminders__list_reminders', 'mcp__reminders__cancel_reminder'];
 const writes = new Set(['Write', 'Edit']);
 const inside = (base, file) => file === base || file.startsWith(base + path.sep);
-export function createPermissions({ sync = noSync, root = ROOT, approve = async () => false, notify = async () => {}, afterWrite = async () => {}, context = '', web, sessionKey = context, resolve, reminders, webAllowed = true, screen, control, tasks } = {}) {
+export function createPermissions({ sync = noSync, root = ROOT, approve = async () => false, notify = async () => {}, afterWrite = async () => {}, context = '', web, sessionKey = context, resolve, reminders, webAllowed = true, screen, control, tasks, access, scheduled=false, onTaint } = {}) {
   root = fs.realpathSync(root);
   const auditFile = path.join(root, 'data/audit.log');
   fs.mkdirSync(path.dirname(auditFile), { recursive: true, mode: 0o700 });
@@ -55,7 +55,10 @@ export function createPermissions({ sync = noSync, root = ROOT, approve = async 
     try {
       if (signal?.aborted) throw new Error('Request cancelled');
       if (/approval/i.test(name)) throw new Error('Approval decisions are owner buttons only');
-      if (TASK_TOOLS.includes(name)) {
+      if(name==='mcp__access__request_access'){
+        if(!access||scheduled||!String(context).startsWith('dash:')||web?.session(sessionKey).tainted)throw Error('Access requests require an untainted dashboard conversation');
+        result={behavior:'allow',updatedInput:input};
+      } else if (TASK_TOOLS.includes(name)) {
         if (!tasks || !String(context).startsWith('dash:')) throw new Error('Dashboard task tools unavailable');
         const action = name.slice('mcp__tasks__'.length);
         const validated = taskSchemas[action].parse(input);
@@ -154,7 +157,7 @@ export function createPermissions({ sync = noSync, root = ROOT, approve = async 
         if (!['mcp__screens__screenshot','mcp__computer__computer','mcp__computer__launch_app'].includes(event.tool_name)) sync.event({ thread: context, machine: event.tool_input?.machine, kind: event.tool_name === 'Bash' ? 'shell' : 'note', summary: `${event.tool_name} completed`, payload: { tool: event.tool_name } });
         if (['WebSearch','WebFetch'].includes(event.tool_name)) {
           web.result(sessionKey, event.tool_name, event.tool_response);
-          if (control) await control.end('thread tainted by web result');
+          if(onTaint)await onTaint();else if (control) await control.end('thread tainted by web result');
           audit({ tool: event.tool_name, query: event.tool_input.query, url: event.tool_input.url, decision: 'completed', tainted: true });
           if (event.tool_name === 'WebFetch' && event.tool_response?.url) {
             try { await publicURL(event.tool_response.url, resolve); } catch (error) { return { decision: 'block', reason: error.message }; }

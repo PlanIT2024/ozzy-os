@@ -103,6 +103,8 @@ export class NodeHub extends EventEmitter {
         }
         peer.send({ type: 'agent.ack', runId: m.runId, sequence: m.sequence });
       } else this.emit('agent', { machine: n.machine, message: m });
+    } else if (m.type === 'access_closed') {
+      this.emit('access_closed',{...m,machine:n.machine});
     } else if (m.type === 'control_closed') {
       if (typeof m.grantId !== 'string' || m.grantId.length > 80 || typeof m.reason !== 'string' || m.reason.length > 100) throw new Error('Invalid control closure');
       this.emit('control_closed', { machine: n.machine, grantId: m.grantId, reason: m.reason,delivery:validDelivery(m.delivery)?m.delivery:undefined });
@@ -126,7 +128,7 @@ export class NodeHub extends EventEmitter {
   request(machine, method, params = {}) {
     let n; try { n = this.nodes.get(canonical(machine)); } catch { return Promise.reject(new Error('Invalid machine name')); }
     if (!n?.online || !n.peer || Date.now() - n.lastSeen > this.stale) return Promise.reject(new Error(`Machine ${machine} is offline`));
-    if (!['status','screen','input_start','input_action','input_focus','input_resolve_app','input_stop','agent.capabilities','agent.run','agent.decide','agent.stop'].includes(method)) return Promise.reject(new Error('Unsupported method'));
+    if (!['grants.capabilities','grants.start','grants.stop','grants.check','status','screen','input_start','input_action','input_focus','input_resolve_app','input_stop','agent.capabilities','agent.run','agent.decide','agent.stop'].includes(method)) return Promise.reject(new Error('Unsupported method'));
     if (['input_start','input_action','input_focus','input_resolve_app'].includes(method) && !n.capabilities?.includes('input')) return Promise.reject(new Error('Machine has no input capability'));
     if (method === 'screen' && !n.capabilities?.includes('screen')) return Promise.reject(new Error('Machine has no screen capability'));
     return new Promise((resolve, reject) => {

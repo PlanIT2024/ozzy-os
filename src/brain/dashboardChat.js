@@ -86,7 +86,7 @@ export function startDashboardChat({root,env={},runner,presence,makeClient=creat
    let response;
    if(waiting.length && /^\s*(approve|approved|yes|do it)[.!\s]*$/i.test(row.body)) {
     cards.push(...waiting);response='Tap Approve or Deny on the card, Ozzy. Chat words never decide an approval.';
-   } else response=await runner.run(`dash:${row.conversation_id}`,row.body,{tasks,output:body=>writer.publish(body,cards),onError:()=>{failed=true;},approve:async()=>false,notify:async()=>{},webAllowed:true});
+   } else response=await runner.run(`dash:${row.conversation_id}`,row.body,{tasks,output:body=>writer.publish(body,cards),onError:()=>{failed=true;},workspace:row.workspace_id,approve:async request=>request.tool==='computer'?await runner.access?.approve(`dash:${row.conversation_id}`,request)||false:false,notify:async()=>{},webAllowed:true});
    await writer.finish(failed?'error':'done',failed?'My ring hit a snag. Please try a smaller request.':response,cards);
    if(!failed)await autoTitleConversation(db,row);
    await checked(db.from('conversations').update({updated_at:iso()}).eq('id',row.conversation_id).eq('owner_id',owner).eq('workspace_id',row.workspace_id));
@@ -96,6 +96,20 @@ export function startDashboardChat({root,env={},runner,presence,makeClient=creat
    if(inserted&&writer)await writer.finish('error','My ring hit a snag. Please try a smaller request.');
    // Keep failed claims durable; recovery repairs the single deterministic reply.
   } finally {presence?.set({listening:0,thinking:0});}
+ }
+ async function continueAccess(g,r) {
+  if(closed)return;
+  const id=replyId(r.id,'access-reply');
+  if((await checked(db.from('chat_messages').select('id').eq('id',id))).length)return;
+  if(!await conversation(r.conversation_id,r.workspace_id))return;
+  await checked(db.from('chat_messages').insert({id,conversation_id:r.conversation_id,workspace_id:r.workspace_id,owner_id:owner,author:'bit',body:'',cards:null,status:'streaming'}));
+  const writer=replyWriter({write:patch=>checked(db.from('chat_messages').update(patch).eq('id',id)),now,sleep});const cards=[];
+  try {
+   const tasks=createTaskActions({db,owner,workspace:r.workspace_id,conversation:r.conversation_id,onCard:async c=>{cards.push(c);await writer.publish(undefined,cards);}});
+   let failed=false;
+   const body=await runner.run(`dash:${r.conversation_id}`,`The owner approved ${g.kind} access on the machine for this conversation. Continue only the plan displayed on that request card: ${r.reason}. Each input still needs its own owner approval.`,{tasks,workspace:r.workspace_id,output:body=>writer.publish(body,cards),onError:()=>{failed=true;},approve:request=>request.tool==='computer'?runner.access.approve(`dash:${r.conversation_id}`,request):Promise.resolve(false),notify:async()=>{},webAllowed:true});
+   await writer.finish(failed?'error':'done',body,cards);
+  }catch{await writer.finish('error','The access task stopped. Check the grant card before retrying.');}
  }
  async function postApprovals() {
   if(closed)return;
@@ -119,6 +133,7 @@ export function startDashboardChat({root,env={},runner,presence,makeClient=creat
   await approvalQueue(postApprovals);
  }
  const schedule=fn=>queue(()=>closed?undefined:fn()).catch(safeLog);
+ if(runner.access)runner.access.onGranted=(g,r)=>ready.then(()=>schedule(()=>continueAccess(g,r)));
  const ready=(async()=>{
   db=await makeClient(env);
   // Repair older interrupted claims too, without treating them as new turns.

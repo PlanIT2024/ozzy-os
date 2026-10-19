@@ -1,7 +1,7 @@
 {
   "name": "ozzy-os",
   "version": "1.0.0",
-  "description": "OZZY OS — bIT always-on brain, encrypted status nodes and blind relay",
+  "description": "OZZY OS \u2014 bIT always-on brain, encrypted status nodes and blind relay",
   "scripts": {
     "brain": "node src/brain/index.js",
     "node": "node src/node/index.js",
@@ -16,7 +16,9 @@
     "agent:enable": "node scripts/agent.js enable",
     "agent:disable": "node scripts/agent.js disable",
     "agent:try": "node scripts/agent.js try",
-    "bitos": "node scripts/bitos-cli.mjs"
+    "bitos": "node scripts/bitos-cli.mjs",
+    "grants:remote": "node scripts/grants.mjs",
+    "grants:stop": "node scripts/grants.mjs stop"
   },
   "keywords": [],
   "author": "",

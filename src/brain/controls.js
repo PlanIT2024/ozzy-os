@@ -10,9 +10,9 @@ import { deliveryPlan, deliveryText, validDelivery } from '../node/input/deliver
 import { assertSafeFocus, terminalFocus, focusedAppMatches } from '../node/input/focus.js';
 import sharp from '../node/screen/sharp.js';
 export class ControlGrants {
-  constructor({sync=noSync,root=ROOT,hub,screens,now=()=>Date.now(),cap=Number(process.env.BIT_CONTROL_MAX_ACTIONS??40)}={}){
+  constructor({presence,sync=noSync,root=ROOT,hub,screens,now=()=>Date.now(),cap=Number(process.env.BIT_CONTROL_MAX_ACTIONS??40)}={}){
     if(!Number.isInteger(cap)||cap<1||cap>1000)throw new Error('Invalid control cap');
-    Object.assign(this,{sync,root,hub,screens,now,cap});this.file=path.join(root,'data/controls.json');this.state=readJSON(this.file,{grants:{},previews:{}});this.listeners=new Map();this.timers=new Map();this.warningTimers=new Map();
+    Object.assign(this,{presence,sync,root,hub,screens,now,cap});this.file=path.join(root,'data/controls.json');this.state=readJSON(this.file,{grants:{},previews:{}});this.listeners=new Map();this.timers=new Map();this.warningTimers=new Map();
     hub?.on?.('control_closed',({machine,grantId,reason,delivery})=>{
       for(const [thread,g]of Object.entries(this.state.grants))if(!g.revokedAt&&canonical(machine)===g.machine&&(!grantId||grantId===g.id)){
         if(['runtime suspended','disconnect'].includes(reason)){g.runtimeClosedAt=new Date(this.now()).toISOString();try{this.save();this.audit(g,null,'suspended');}catch{console.warn('Control suspension persistence unavailable');}}
@@ -21,6 +21,7 @@ export class ControlGrants {
     });
     for(const [thread,g]of Object.entries(this.state.grants))if(!g.revokedAt)this.arm(thread,g);
   }
+  lease(name,thread,event){if(String(thread).startsWith('dash:')){if(name==='leaseEnded')this.presence?.observe(name,event);}else this.sync[name](event);}
   save(){saveJSON(this.file,this.state);}
   audit(grant,action,decision,approvalId){fs.mkdirSync(path.join(this.root,'data'),{recursive:true,mode:0o700});fs.appendFileSync(path.join(this.root,'data/audit.log'),JSON.stringify({event:'control',time:new Date(this.now()).toISOString(),machine:grant?.machine,grantId:grant?.id,approvalId,decision,delivery:grant?.lastDelivery,...(action?actionLog(action):{})})+'\n',{mode:0o600});}
   async warn(thread,g){
@@ -46,24 +47,24 @@ export class ControlGrants {
     for(const [other,g]of Object.entries(this.state.grants))if(!g.revokedAt&&(g.machine===machine||other===thread))await this.off(other,'replaced');
     const g={id:randomUUID(),machine,issuedAt:new Date(this.now()).toISOString(),expiresAt:new Date(Math.min(this.now()+600000,Date.parse(screen.expiresAt))).toISOString(),count:0,maxActions:this.cap,actions:[],screenId:screen.id};
     this.state.grants[thread]=g;this.save();this.arm(thread,g);this.audit(g,null,'on');
-    this.sync.leaseStarted({...g,thread,level:'control'});
-    try{await this.hub.request(machine,'input_start',{grantId:g.id,expiresAt:g.expiresAt,maxActions:g.maxActions});if(this.grant(thread).id!==g.id)throw new Error('Control grant changed during consent');}
+    this.lease('leaseStarted',thread,{...g,thread,level:'control'});
+    try{await this.screens.ensureNode(thread,this.hub,'control');await this.hub.request(machine,'input_start',{grantId:g.id,conversationKey:thread,screenGrantId:g.screenId,expiresAt:g.expiresAt,maxActions:g.maxActions});if(this.grant(thread).id!==g.id)throw new Error('Control grant changed during consent');}
     catch{await this.off(thread,'portal consent failed');throw new Error('Control consent failed or session ended, Ozzy. Check the machine’s GNOME dialog and node logs.');}
     return g;
   }
   async off(thread,reason='owner off',send=true,expectedId){
     const g=this.state.grants[thread];if(!g||g.revokedAt||(expectedId&&g.id!==expectedId))return;
-    this.sync.leaseEnded({id:g.id,reason,revokedAt:new Date(this.now()).toISOString()});
+    this.lease('leaseEnded',thread,{id:g.id,reason,revokedAt:new Date(this.now()).toISOString()});
     g.revokedAt=new Date(this.now()).toISOString();g.reason=reason;clearTimeout(this.timers.get(thread));clearTimeout(this.warningTimers.get(thread));try{this.save();this.audit(g,null,'off');}catch{console.warn('Control revocation persistence failed; stopping node anyway');}
-    if(send)await this.hub.request(g.machine,'input_stop',{grantId:g.id}).catch(()=>{});
+    if(send)await this.hub.request(g.machine,'input_stop',{grantId:g.id,conversationKey:thread}).catch(()=>{});
     const notify=this.listeners.get(thread)|| (this.notifyThread ? text=>this.notifyThread(thread,text) : ()=>{});
     await Promise.resolve(notify(`🖱️ control ended on ${g.machine}: ${g.count} steps (completed: ${g.actions.join(', ')||'none'}${g.pendingAction ? '; unverified: '+g.pendingAction : ''}${g.lastDelivery ? '; '+deliveryText(g.lastDelivery) : ''}). ${reason}.`)).catch(()=>console.warn('Control end notification unavailable'));
   }
   async close(){
-    for(const g of Object.values(this.state.grants))if(!g.revokedAt){await this.hub.request(g.machine,'input_stop',{grantId:g.id,revoke:false}).catch(()=>{});try{this.audit(g,null,'suspended');}catch{console.warn('Control suspension audit unavailable');}}
+    for(const [thread,g] of Object.entries(this.state.grants))if(!g.revokedAt){await this.hub.request(g.machine,'input_stop',{grantId:g.id,conversationKey:thread,revoke:false}).catch(()=>{});try{this.audit(g,null,'suspended');}catch{console.warn('Control suspension audit unavailable');}}
     for(const timer of [...this.timers.values(),...this.warningTimers.values()])clearTimeout(timer);
   }
-  context({thread,scheduled=false,tainted=()=>false,approve=async()=>false,notify=async()=>{},screen}){
+  context({thread,scheduled=false,tainted=()=>false,approve=async()=>false,notify=async()=>{},screen,onUse=async()=>{}}){
     let stopped=false,frame=null,reservation=null;const generation=this.active(thread)?.id;const receipts=new Map();
     const gate=machine=>{
       if(stopped)throw new Error('This control task ended. Ask Ozzy what to do instead.');
@@ -88,9 +89,9 @@ export class ControlGrants {
         ticket=reservation={key:receiptKey(raw)};
         const observedFrame=frame;
         let focus,approvedApp;
-        if(action.action==='launch_app'){approvedApp=await this.hub.request(g.machine,'input_resolve_app',{grantId:g.id,app:action.app});focus=await this.hub.request(g.machine,'input_focus',{grantId:g.id,action:'screenshot'});}
+        if(action.action==='launch_app'){approvedApp=await this.hub.request(g.machine,'input_resolve_app',{grantId:g.id,conversationKey:thread,app:action.app});focus=await this.hub.request(g.machine,'input_focus',{grantId:g.id,conversationKey:thread,action:'screenshot'});}
         else if(action.action!=='screenshot'){
-          focus=await this.hub.request(g.machine,'input_focus',{grantId:g.id,...action});
+          focus=await this.hub.request(g.machine,'input_focus',{grantId:g.id,conversationKey:thread,...action});
           assertSafeFocus(focus,action,focus.focused);
           if(action.end)assertSafeFocus(focus.destination,action,focus.focused);
         }
@@ -119,9 +120,9 @@ export class ControlGrants {
         if(action.action!=='screenshot'&&receipt.frame!==frame)throw new Error('Screen changed after approval; stop and inspect.');
         let skipped=false;
         if(action.action!=='screenshot'){
-          const started=await this.hub.request(g.machine,'input_start',{grantId:g.id,expiresAt:g.expiresAt,maxActions:g.maxActions});
+          const started=await this.hub.request(g.machine,'input_start',{grantId:g.id,conversationKey:thread,screenGrantId:g.screenId,expiresAt:g.expiresAt,maxActions:g.maxActions});
           skipped=started.newSession===true;delete g.runtimeClosedAt;this.save();
-          if(!skipped){g.count++;g.pendingAction=action.action;this.save();dispatched=true;this.sync.event({thread,machine:g.machine,kind:'input',summary:`Computer ${action.action}`,leaseId:g.id,payload:{action:action.action,text_length:typeof action.text==='string'?action.text.length:undefined}});const acknowledged=await this.hub.request(g.machine,'input_action',{grantId:g.id,...action,expectedFocus:receipt.focus?.focused,approvedApp:receipt.approvedApp});delivery=acknowledged?.delivery;g.lastDelivery=delivery;g.actions.push(action.action);delete g.pendingAction;this.save();}
+          if(!skipped){g.count++;g.pendingAction=action.action;this.save();dispatched=true;if(!String(thread).startsWith('dash:'))this.sync.event({thread,machine:g.machine,kind:'input',summary:`Computer ${action.action}`,leaseId:g.id,payload:{action:action.action,text_length:typeof action.text==='string'?action.text.length:undefined}});await onUse(action.action);const acknowledged=await this.hub.request(g.machine,'input_action',{grantId:g.id,conversationKey:thread,...action,expectedFocus:receipt.focus?.focused,approvedApp:receipt.approvedApp});delivery=acknowledged?.delivery;g.lastDelivery=delivery;g.actions.push(action.action);delete g.pendingAction;this.save();}
         }
         if(action.action==='screenshot'){g.count++;this.save();}
         const result=await screen.capture(g.machine);
@@ -129,9 +130,9 @@ export class ControlGrants {
         if(action.action==='screenshot'){g.actions.push('screenshot');this.save();}
         const text=result.content.find(block=>block.type==='text'),image=result.content.find(block=>block.type==='image');
         const metadata=JSON.parse(text.text);frame={...metadata,data:image.data,mimeType:image.mimeType,bytes:Buffer.from(image.data,'base64').length};
-        if(action.action==='screenshot'){const actual=await this.hub.request(g.machine,'input_focus',{grantId:g.id,action:'screenshot'}).catch(()=>null);result.content.push({type:'text',text:`Actual app identifier: ${actual?.focused?.focusKind==='shell-search'&&actual?.overviewActive===true?'gnome-shell-search':actual?.focused?.app?.toLowerCase()??'unknown'}. Focused: ${actual?.focused?.app??'unknown'} — ${actual?.focused?.window??'unknown'}. Overview active: ${actual?.overviewActive===true}. Use the intended identifier as expected_app; stop if it does not match your intent.`});}
+        if(action.action==='screenshot'){const actual=await this.hub.request(g.machine,'input_focus',{grantId:g.id,conversationKey:thread,action:'screenshot'}).catch(()=>null);result.content.push({type:'text',text:`Actual app identifier: ${actual?.focused?.focusKind==='shell-search'&&actual?.overviewActive===true?'gnome-shell-search':actual?.focused?.app?.toLowerCase()??'unknown'}. Focused: ${actual?.focused?.app??'unknown'} — ${actual?.focused?.window??'unknown'}. Overview active: ${actual?.overviewActive===true}. Use the intended identifier as expected_app; stop if it does not match your intent.`});}
         if(action.action!=='screenshot'){
-          const actual=await this.hub.request(g.machine,'input_focus',{grantId:g.id,action:'screenshot'}).catch(()=>null);
+          const actual=await this.hub.request(g.machine,'input_focus',{grantId:g.id,conversationKey:thread,action:'screenshot'}).catch(()=>null);
           result.content.unshift({type:'text',text:`Reported focused application after action: ${actual?.focused?.app??'unknown'} — ${actual?.focused?.window??'unknown'}. Actual app identifier: ${actual?.focused?.focusKind==='shell-search'&&actual?.overviewActive===true?'gnome-shell-search':actual?.focused?.app?.toLowerCase()??'unknown'}. Overview active: ${actual?.overviewActive===true}. Verify this matches the intended application before proposing type/key. If unexpected, stop and ask Ozzy to bring the target forward; do not repair in another app.`});
           if(action.action==='launch_app'&&!skipped&&!focusedAppMatches(actual?.focused,receipt.approvedApp)){
             stopped=true;

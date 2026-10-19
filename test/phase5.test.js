@@ -23,7 +23,7 @@ import { sodium, publicHex, nodeKeys } from '../src/transport/crypto.js';
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(fn) { for(let i=0;i<200;i++){if(fn())return;await pause(10);}throw new Error('Timed out'); }
 function fixture(t){const root=fs.mkdtempSync(path.join(os.tmpdir(),'bit-phase5-'));for(const area of ['memory','skills','persona','schedules'])fs.mkdirSync(path.join(root,'bit',area),{recursive:true});fs.writeFileSync(path.join(root,'bit/persona/persona.md'),'bIT');fs.writeFileSync(path.join(root,'bit/persona/personalities.json'),'{}');t.after(()=>fs.rmSync(root,{recursive:true,force:true}));return root;}
-function fakeHub(result){let calls=0;return {list:()=>[{machine:'OZZY-AI',online:true,capabilities:['status','screen']}],request:async(_machine,method)=>{assert.equal(method,'screen');calls++;return result;},get calls(){return calls;}};}
+function fakeHub(result){let calls=0;return {list:()=>[{machine:'OZZY-AI',online:true,capabilities:['status','screen']}],request:async(_machine,method)=>{if(method==='grants.start'||method==='grants.stop')return {active:true};assert.equal(method,'screen');calls++;return result;},get calls(){return calls;}};}
 async function image(){return encodeCapture(await sharp({create:{width:2000,height:1000,channels:3,background:'#128678'}}).png().toBuffer(),{monitors:[{connector:'DP-1',x:0,y:0,width:2000,height:1000,scale:1,primary:true}],capturedAt:'2026-10-06T15:00:00.000Z'});}
 function adapter(t,root,extra={}){const client=new EventEmitter();client.destroy=()=>{};const d=createDiscord({client,env:{OWNER_DISCORD_ID:'owner',BIT_CHANNEL_ID:'bit'},auditFile:path.join(root,'data/audit.log'),hub:{},runner:{},budget:{},...extra});t.after(()=>d.close());return{d,client};}
 test('screen is gated off by default and explicitly false; macOS/Windows are unsupported', async()=>{
@@ -91,7 +91,7 @@ test('node/hub advertise screen dynamically as graphical session comes/goes, enc
   const capture=await image(),screen={available:async()=>present,capture:async()=>capture,close:()=>{}};
   const node=startNode({url:`ws://127.0.0.1:${hub.server.address().port}`,machine:'OZZY-AI',token,key,brainKey:brainKey.publicKey,screen,capabilityInterval:20,log:()=>{}});t.after(()=>node.close());
   await until(()=>hub.list()[0].online);assert.deepEqual(hub.list()[0].capabilities,['status']);await assert.rejects(hub.request('OZZY-AI','screen'),/capability/);
-  present=true;await until(()=>hub.list()[0].capabilities.includes('screen'));assert.equal((await hub.request('OZZY-AI','screen')).data,capture.data);
+  present=true;await until(()=>hub.list()[0].capabilities.includes('screen'));await assert.rejects(hub.request('OZZY-AI','screen'));const scope={grantId:'test-screen',conversationKey:'discord-test',expiresAt:new Date(Date.now()+60000).toISOString()};await hub.request('OZZY-AI','grants.start',scope);assert.equal((await hub.request('OZZY-AI','screen',scope)).data,capture.data);
   present=false;await until(()=>!hub.list()[0].capabilities.includes('screen'));assert.deepEqual(hub.list()[0].capabilities,['status']);
 });
 test('/screen is owner-only, per conversation; /machines reflects capability and /budget counts it',async t=>{
