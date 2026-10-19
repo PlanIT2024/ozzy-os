@@ -62,7 +62,7 @@ GitHub's Cloudflare Pages check for `eeb913b` is a completed **failure** (check 
 
 Two separate fresh clones, at `eeb913b` and then-current `main`, were tested from `apps/dashboard` with `npm ci` followed by `npm run build`, without copying ignored environment files or installing root dependencies. Both reproduced `src/runs.test.tsx(2,43): error TS2307: Cannot find module 'node:fs' or its corresponding type declarations.` The dashboard lacked a direct `@types/node` development dependency. Previous working-checkout builds accidentally resolved it from the parent repo's installed dependencies.
 
-The dashboard package and its lockfile now directly pin `@types/node` to `26.6.3`, matching the existing root lockfile. A clean build after committing this fix will verify the package dependency closure and the relative import of `shared/bit-orb` from the dashboard root. Test runtime versions: Node `v22.23.1`, npm `10.9.8`. This is a reproduced repo defect, not a claim that the private Cloudflare error log has been inspected.
+The dashboard package and its lockfile now directly pin `@types/node` to `26.6.3`, matching the existing root lockfile. A third fresh clone at fix commit `5b3596e`, rooted at `apps/dashboard`, passed `npm ci && npm run build && npm test`: 79 modules transformed, credential scan PASS, and 25/25 tests passed. There were no parent/root node_modules and no copied `.env.local`. This verifies the package dependency closure and the relative import of `shared/bit-orb` from that dashboard root. Test runtime versions: Node `v22.23.1`, npm `10.9.8`. This is a reproduced repo defect, not a claim that the private Cloudflare error log has been inspected.
 
 Screenshots and state logs are in `docs/proof/bit-presence/`. Physical-device observations and a Cloudflare deployment are not claimed.
 
@@ -95,3 +95,10 @@ After deployment, wait for the owner's notes. Record phone and desktop behavior 
 ## Commit review
 
 The outstanding-file review checked 22 files against configured credential values and common token formats. No matches were found. `security-check.json` has 18 result entries containing only `name`, `ok`, and `detail`, with permission outcomes and the owner's auth UUID; it contains no keys, access tokens, refresh tokens, passwords or session objects. The smoke script reads secrets from ignored existing configuration and does not embed credential values. Screenshots show dashboard/lab output, not login credentials.
+
+
+## Git-connected deployment follow-up
+
+The owner authorized pushing the local main commits to trigger the existing Pages Git integration. There is no Wrangler login/deployment step. The exact Pages build settings and private build log were not supplied (the message contained placeholders), so the clean dashboard-root reproduction above is explicitly distinguished from an exact match of the Cloudflare configuration.
+
+After pushing, inspect the Cloudflare Pages check on the new main commit. Only a successful deployment check and a served site establish deployment; a Git push alone is not reported as a successful deploy. The two dashboard-only owner tests above should be run after that deployment succeeds. Chat, screen, and control tests remain deferred.
