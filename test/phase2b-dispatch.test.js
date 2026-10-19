@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { NodeHub } from '../src/brain/nodeHub.js';
 import { createDispatcher } from '../src/bitos/dispatch.js';
 
 function fixture(options={}) {
@@ -9,7 +10,7 @@ function fixture(options={}) {
  const db={from(table){let filters=[],op='select',payload;const q={select(){return q;},eq(k,v){filters.push(r=>r[k]===v);return q;},in(k,v){filters.push(r=>v.includes(r[k]));return q;},is(k,v){filters.push(r=>(r[k]??null)===v);return q;},update(v){op='update';payload=v;return q;},insert(v){op='insert';payload=v;return q;},then(resolve,reject){reads++;try{const failure=fault?.({table,op,payload});if(failure){if(failure.thrown)throw failure.thrown;return Promise.resolve({data:null,error:failure}).then(resolve,reject);}let rows=tables[table].filter(r=>filters.every(f=>f(r)));if(op==='update')rows.forEach(r=>Object.assign(r,structuredClone(payload)));if(op==='insert'){const r={status:'pending',...structuredClone(payload)};tables[table].push(r);rows=[r];}return Promise.resolve({data:structuredClone(rows)}).then(resolve,reject);}catch(e){return Promise.reject(e).then(resolve,reject);}}};return q;},channel(){const c={on(_a,_b,fn){callbacks.push(fn);return c;},subscribe(fn){subscriptions.push(fn);return c;}};return c;},removeChannel(){}};
  const hub=new EventEmitter(),calls=[];hub.list=()=>[{machine:tables.nodes[0].name,online:true}];hub.request=async(machine,method,params)=>{calls.push({method,params});if(method==='agent.capabilities')return {executors:['codex'],folders:['sandbox'],maxLeaseMinutes:30,maxConcurrent:2};return {};};
  const d=createDispatcher({env:{BITOS_DISPATCH:options.off?'0':'1',BITOS_OWNER_USER_ID:'owner',BITOS_AGENT_NODES:options.allow??'MACBOOK',SUPABASE_SERVICE_ROLE_KEY:'fake-service-role-value'},hub,makeClient:async()=>{if(options.clientError)throw options.clientError;return db;},now:()=>time,interval:(fn,ms)=>{ticks.push(fn);assert.equal(ms,5000);return {unref(){}};},info:line=>logs.push(line),log:line=>logs.push(line)});
- return {d,tables,hub,calls,callbacks,subscriptions,logs,ticks,setFault(fn){fault=fn;},get reads(){return reads;},advance(ms=120001){time+=ms;},approve(a=tables.approvals[0]){Object.assign(a,{status:'approved',decided_by:'owner',decided_at:new Date(time).toISOString()});}};
+ return {d,db,tables,hub,calls,callbacks,subscriptions,logs,ticks,setFault(fn){fault=fn;},get reads(){return reads;},advance(ms=120001){time+=ms;},approve(a=tables.approvals[0]){Object.assign(a,{status:'approved',decided_by:'owner',decided_at:new Date(time).toISOString()});}};
 }
 test('flag off performs zero reads and subscriptions',async()=>{const f=fixture({off:true});await f.d.ready;assert.equal(f.reads,0);assert.equal(f.callbacks.length,0);});
 for(const [label,options] of Object.entries({unlisted:{allow:''},'OZZY-AI default':{name:'OZZY-AI',allow:''},alias:{run:{folder_alias:'elsewhere'}},executor:{run:{executor:'cowork'}},lease:{run:{lease_minutes:31}}}))test(`denies ${label}`,async()=>{const f=fixture(options);await f.d.ready;assert.equal(f.tables.agent_runs[0].status,'denied');f.d.close();});
@@ -67,10 +68,10 @@ test('approval processing, dispatch catch and event persistence failures retain 
  f.hub.emit('agent',{machine:'MACBOOK',message:{type:'agent.event',runId:'r',summary:'progress'}});
  await f.d.scan();assert.equal(diagnostic(f.logs.at(-1)).table,'task_events');assert.equal(diagnostic(f.logs.at(-1)).operation,'insert');f.d.close();
 });
-test('RPC failures report method and node table without request parameters',async()=>{
+test('RPC failures report method and run table without request parameters',async()=>{
  const prompt='Private instruction unique to RPC';const f=fixture({run:{prompt}});await f.d.ready;f.approve();
  f.hub.request=async()=>{throw new Error(`Node rejected ${prompt} fake-service-role-value`);};
- await f.d.scan();const d=diagnostic(f.logs[0]);assert.equal(d.operation,'agent.run');assert.equal(d.table,'nodes');assert.equal(d.code,null);assert.equal(d.hint,null);
+ await f.d.scan();const d=diagnostic(f.logs[0]);assert.equal(d.operation,'agent.run');assert.equal(d.table,'agent_runs');assert.equal(d.code,null);assert.equal(d.hint,null);
  assert.ok(!f.logs[0].includes(prompt));assert.ok(!f.logs[0].includes('fake-service-role-value'));f.d.close();
 });
 test('Realtime errors include subscription context and redacted diagnostics',async()=>{
@@ -176,3 +177,32 @@ test('disabled capabilities log once at info without dispatcher failures',async(
 });
 
 test('started_at only from matching authenticated started event, replay preserves first time',async()=>{const f=fixture();await f.d.ready;f.approve();await f.d.scan();assert.equal(f.tables.agent_runs[0].started_at,undefined);f.hub.emit('agent',{machine:'OTHER',message:{type:'agent.event',runId:'r',kind:'started'}});await f.d.scan();assert.equal(f.tables.agent_runs[0].started_at,undefined);f.hub.emit('agent',{machine:'MACBOOK',message:{type:'agent.event',runId:'r',kind:'started'}});await f.d.scan();const first=f.tables.agent_runs[0].started_at;assert.ok(first);f.advance(5000);f.hub.emit('agent',{machine:'MACBOOK',message:{type:'agent.event',runId:'r',kind:'started'}});await f.d.scan();assert.equal(f.tables.agent_runs[0].started_at,first);f.d.close();});
+
+for(const [message,tagged] of [['Unknown approval or invalid decision',false],['Agent execution is disabled',true],['Machine disconnected',true]])test(`permanent decision rejection is terminal once: ${message}`,async()=>{
+ const f=await offlineFixture('agent.decide');let attempts=0;
+ f.hub.request=async(_machine,method)=>{if(method==='agent.decide'){attempts++;throw Object.assign(new Error(message),{nodeRejected:tagged});}return {};};
+ const approval=f.tables.approvals[1];await f.d.scan();
+ assert.equal(attempts,1);assert.equal(f.tables.agent_runs[0].status,'failed');assert.equal(f.tables.agent_runs[0].summary,`Agent decision rejected: ${message}`);
+ assert.equal(approval.status,'approved','owner decision is preserved');assert.equal(approval.action_detail.kind,'agent_decision_failed');assert.equal(approval.action_detail.failure_reason,message);
+ assert.equal(f.tables.tasks[0].status,'waiting_on_you');assert.equal(f.logs.length,1);assert.equal(diagnostic(f.logs[0]).table,'approvals');assert.equal(diagnostic(f.logs[0]).operation,'agent.decide');
+ for(let i=0;i<30;i++){f.advance(6000);await f.d.scan();}assert.equal(attempts,1);assert.equal(f.logs.length,1);f.d.close();
+ const restarted=createDispatcher({env:{BITOS_DISPATCH:'1',BITOS_OWNER_USER_ID:'owner',BITOS_AGENT_NODES:'MACBOOK'},hub:f.hub,makeClient:async()=>f.db,interval:()=>({unref(){}}),log:line=>f.logs.push(line),info:()=>{}});await restarted.ready;await restarted.scan();assert.equal(attempts,1);restarted.close();
+});
+for(const failedTable of ['agent_runs','approvals'])test(`terminal decision persistence retries DB only after ${failedTable} failure`,async()=>{
+ const f=await offlineFixture('agent.decide');let attempts=0;
+ f.hub.request=async(_machine,method)=>{if(method==='agent.decide'){attempts++;throw Object.assign(new Error('Unknown approval or invalid decision'),{nodeRejected:true});}return {};};
+ let failed=false;f.setFault(({table,op,payload})=>{if(!failed&&table===failedTable&&op==='update'&&(payload.status==='failed'||payload.action_detail?.kind==='agent_decision_failed')){failed=true;return {code:'network',message:'temporary database failure'};}});
+ await f.d.scan();assert.ok(failed);assert.equal(attempts,1);await f.d.scan();assert.equal(attempts,1);assert.equal(f.tables.agent_runs[0].status,'failed');assert.equal(f.tables.approvals[1].action_detail.kind,'agent_decision_failed');
+ assert.equal(f.logs.map(diagnostic).filter(d=>d.operation==='agent.decide').length,1);f.d.close();
+});
+test('permanent decision rejection redacts prompts and credentials from stored reason',async()=>{
+ const f=await offlineFixture('agent.decide');f.hub.request=async()=>{throw Object.assign(new Error('Rejected test fake-service-role-value /home/ozzy/private/secret'),{nodeRejected:true});};await f.d.scan();
+ const text=JSON.stringify({run:f.tables.agent_runs[0].summary,detail:f.tables.approvals[1].action_detail,logs:f.logs});assert.ok(!text.includes('fake-service-role-value'));assert.ok(!text.includes('Rejected test '));assert.equal(f.tables.agent_runs[0].status,'failed');f.d.close();
+});
+
+test('only matching authenticated node responses carry permanent rejection metadata',()=>{
+ const peer={},other={},pending=new Map();let rejected;
+ const hub={nodes:new Map([['macbook',{machine:'MacBook',online:true,peer}]]),pending,sync:{nodeSeen(){}}};pending.set('rpc',{peer,timer:null,reject:error=>{rejected=error;}});
+ const message={type:'res',id:'rpc',ok:false,error:'Unknown approval or invalid decision'};NodeHub.prototype.message.call(hub,'macbook',other,message);assert.equal(rejected,undefined);assert.ok(pending.has('rpc'));
+ NodeHub.prototype.message.call(hub,'macbook',peer,message);assert.equal(rejected.nodeRejected,true);assert.equal(rejected.message,message.error);assert.equal(pending.size,0);
+});

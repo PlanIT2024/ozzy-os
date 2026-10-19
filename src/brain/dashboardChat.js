@@ -38,10 +38,12 @@ export async function autoTitleConversation(db,row) {
  // The predicate is evaluated under the row lock. A racing owner rename wins.
  await checked(db.from('conversations').update({title:conversationTitle(row.body)}).eq('id',row.conversation_id).eq('workspace_id',row.workspace_id).eq('owner_id',row.owner_id).eq('title_set_by_owner',false).eq('title','New chat'));
 }
-export function startDashboardChat({root,env={},runner,presence,makeClient=createMirrorClient,now=Date.now,sleep,log=console.warn}={}) {
- if(env.BITOS_SUPABASE!=='1'||env.BITOS_DASHBOARD_CHAT!=='1')return {ready:Promise.resolve(),close(){}};
+export function startDashboardChat({root,env={},runner,presence,makeClient=createMirrorClient,now=Date.now,sleep,log=console.warn,info=console.info}={}) {
+ const announce=text=>{try{info(text);}catch{}};
+ if(env.BITOS_SUPABASE!=='1'||env.BITOS_DASHBOARD_CHAT!=='1'){announce('Dashboard chat disabled; BITOS_SUPABASE=1 and BITOS_DASHBOARD_CHAT=1 are required.');return {ready:Promise.resolve(),close(){}};}
  const owner=env.BITOS_OWNER_USER_ID;
  if(!owner)throw new Error('Dashboard chat requires BITOS_OWNER_USER_ID');
+ announce('Dashboard chat enabled; initializing owner-scoped realtime subscription.');
  const file=path.join(root,'data/dashboard-chat-processed.json'), ledger=readJSON(file,{}), queue=serial(), approvalQueue=serial();
  let db,channel,closed=false;
  const iso=()=>new Date(now()).toISOString();
@@ -129,7 +131,7 @@ export function startDashboardChat({root,env={},runner,presence,makeClient=creat
     // Re-fetch the authoritative row instead of trusting a notification payload.
     const rows=await checked(db.from('chat_messages').select('*').eq('id',event.new.id).eq('owner_id',owner).eq('author','owner'));if(rows[0])await processRow(rows[0]);
    });
-  }).on('postgres_changes',{event:'INSERT',schema:'public',table:'conversations',filter:`owner_id=eq.${owner}`},()=>void approvalQueue(()=>closed?undefined:postApprovals()).catch(safeLog)).on('postgres_changes',{event:'*',schema:'public',table:'approvals'},()=>void approvalQueue(()=>closed?undefined:postApprovals()).catch(safeLog)).subscribe(status=>{if(status==='SUBSCRIBED')void schedule(scan);});
+  }).on('postgres_changes',{event:'INSERT',schema:'public',table:'conversations',filter:`owner_id=eq.${owner}`},()=>void approvalQueue(()=>closed?undefined:postApprovals()).catch(safeLog)).on('postgres_changes',{event:'*',schema:'public',table:'approvals'},()=>void approvalQueue(()=>closed?undefined:postApprovals()).catch(safeLog)).subscribe(status=>{if(closed)return;if(status==='SUBSCRIBED'){announce('Dashboard chat subscribed; owner-scoped realtime is ready.');void schedule(scan);}else if(['CHANNEL_ERROR','TIMED_OUT'].includes(status))log(`Dashboard chat realtime ${status}; catch-up will run after reconnection.`);});
   await schedule(scan);
  })();
  return {ready,scan:()=>ready.then(()=>schedule(scan)),drain:async()=>{await queue(()=>{});await approvalQueue(()=>{});},close(){closed=true;if(channel)void db.removeChannel(channel);}};

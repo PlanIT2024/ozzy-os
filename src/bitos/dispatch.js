@@ -8,7 +8,7 @@ export function createDispatcher({ presence, env = process.env, hub, makeClient 
   const settings = { ...env }, owner = settings.BITOS_OWNER_USER_ID;
   const allowed = new Set((settings.BITOS_AGENT_NODES || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean));
   const disabled = new Set();
-  const caps = new Map(), confirmed = new Set(), recovered = new Set(), retries = new Map();
+  const caps = new Map(), confirmed = new Set(), recovered = new Set(), retries = new Map(), decisionFailures = new Map();
   const started = now(); let subscribedTasks = ''; let db, channel, timer, closed = false, chain = Promise.resolve();
   // Keep query/RPC context without serializing errors, rows, request parameters,
   // stacks or Supabase details (which can contain an entire failing row).
@@ -53,7 +53,7 @@ export function createDispatcher({ presence, env = process.env, hub, makeClient 
       return r.data;
     });
   }
-  const request = (machine, method, params) => attempt(method, 'nodes', () => hub.request(machine, method, params));
+  const request = (machine, method, params) => attempt(method, method === 'agent.decide' ? 'approvals' : ['agent.run','agent.stop'].includes(method) ? 'agent_runs' : 'nodes', () => hub.request(machine, method, params));
   const row = async (table, id) => (await query(table, 'select', db.from(table).select('*').eq('id', id)))[0];
   const update = (table, id, data) => query(table, 'update', db.from(table).update(data).eq('id', id));
   async function context(id) {
@@ -94,8 +94,8 @@ export function createDispatcher({ presence, env = process.env, hub, makeClient 
     } catch (error) {
       const source = failures.get(error)?.error;
       // These are hub/relay transport errors, not arbitrary remote tool failures.
-      const offline = source?.message === `Machine ${n.name} is offline`
-        || source?.message === 'Machine disconnected' || source?.message === 'Relay offline';
+      const offline = !source?.nodeRejected && (source?.message === `Machine ${n.name} is offline`
+        || source?.message === 'Machine disconnected' || source?.message === 'Relay offline');
       if (!offline) { retries.delete(key); throw error; }
       if (!pending) {
         retries.set(key, { runId: r.id, since: now(), next: now() + 5000 });
@@ -128,10 +128,19 @@ export function createDispatcher({ presence, env = process.env, hub, makeClient 
       await approval(r,n,{run_id:r.id,kind:'run'},`Run ${r.executor} on ${n.name} in ${r.folder_alias} for ${r.lease_minutes} min: ${r.prompt.slice(0,200)}`);
     }
   }
+  async function persistDecisionFailure(r, a, reason) {
+    // Fail the run first: even a restart during the following write cannot
+    // send this decision again. Keep the owner's approved/denied status intact.
+    if (r.status !== 'failed') await finish(r, 'failed', `Agent decision rejected: ${reason}`);
+    else await update('tasks', r.task_id, {status:'waiting_on_you'});
+    await update('approvals', a.id, {action_detail:{...a.action_detail,kind:'agent_decision_failed',failure_reason:reason}});
+    decisionFailures.delete(a.id);
+  }
   async function decide(id) {
     // Realtime only wakes the scanner. Always fetch both authoritative rows.
     const a = await row('approvals',id); if (!a?.action_detail?.run_id) return;
     const {run:r,node:n} = await context(a.action_detail.run_id); if (!r || a.task_id !== r.task_id || a.node_id !== n.id) return;
+    if (decisionFailures.has(id)) return persistDecisionFailure(r, a, decisionFailures.get(id));
     const kind = a.action_detail.kind;
     const retryingRun = retries.has(retryKey(r, 'agent.run'));
     if (kind === 'run' && r.status !== 'awaiting_approval' && !(r.status === 'dispatched' && retryingRun)) return;
@@ -158,7 +167,20 @@ export function createDispatcher({ presence, env = process.env, hub, makeClient 
       } catch (error) { report(error, 'dispatch_run', 'agent_runs'); await finish(r,'failed','Node dispatch failed'); }
     } else {
       if (typeof a.action_detail.request_id !== 'string') return;
-      if (!await retryRequest(r,n,'agent.decide',{runId:r.id,requestId:a.action_detail.request_id,decision:yes?'allow':'deny'},a)) return;
+      try {
+        if (!await retryRequest(r,n,'agent.decide',{runId:r.id,requestId:a.action_detail.request_id,decision:yes?'allow':'deny'},a)) return;
+      } catch (error) {
+        const source = failures.get(error)?.error;
+        // Only an authenticated node response (or the known legacy rejection)
+        // is permanent. Transport failures must never masquerade as decisions.
+        if (!source?.nodeRejected && source?.message !== 'Unknown approval or invalid decision') throw error;
+        let reason = String(source.message || 'Node rejected the approval decision');
+        for (const text of [...privateText].sort((a,b)=>b.length-a.length)) reason = reason.replaceAll(text, '[prompt omitted]');
+        reason = redact(reason, settings);
+        decisionFailures.set(id, reason);
+        report(error, 'agent.decide', 'approvals');
+        return persistDecisionFailure(r, a, reason);
+      }
       await update('approvals',a.id,{status:yes?'approved':expired?'expired':'denied',action_detail:{...a.action_detail,kind:'agent_decided'}});
       await update('tasks',r.task_id,{status:'running'});
     }
@@ -222,7 +244,7 @@ export function createDispatcher({ presence, env = process.env, hub, makeClient 
     timer = interval(()=>serial('scan', 'agent_runs,approvals', scan),5000); timer.unref?.();
     await serial('scan', 'agent_runs,approvals', scan);
   })().catch(error => { report(error, 'startup', 'agent_runs'); throw error; });
-  return {ready,scan:()=>ready.then(()=>serial('scan', 'agent_runs,approvals', scan)),close(){closed=true;retries.clear();clearInterval(timer);hub.off('node_connected',connect);hub.off('agent',message);if(channel) void attempt('unsubscribe', 'agent_runs,approvals', () => db.removeChannel(channel)).catch(error => report(error, 'close', 'agent_runs,approvals'));}};
+  return {ready,scan:()=>ready.then(()=>serial('scan', 'agent_runs,approvals', scan)),close(){closed=true;retries.clear();decisionFailures.clear();clearInterval(timer);hub.off('node_connected',connect);hub.off('agent',message);if(channel) void attempt('unsubscribe', 'agent_runs,approvals', () => db.removeChannel(channel)).catch(error => report(error, 'close', 'agent_runs,approvals'));}};
 }
 
 // Node wireText has already made worktree paths relative. Apply the same
