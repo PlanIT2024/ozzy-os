@@ -130,3 +130,16 @@ For a normal successful reply, with N intermediate streaming/card checkpoints:
 Browser screenshots and bounds are in `docs/proof/dashboard-chat/`. These are
 local deterministic fixtures, not phone/desktop live proof. Live steps 1–5 in the
 chat prompt are intentionally deferred until after migration review/application.
+
+## Deferred follow-up after live proof
+
+Owner report (2026-10-19): journalctl at 12:55 and 14:03–14:05 shows
+agent.decide retried about every six seconds for minutes after the node replied
+“Unknown approval or invalid decision.” Diagnostics label the table as nodes.
+Investigate after chat live proof: distinguish permanent node rejections from
+transient transport failures, record a terminal approval/run outcome once with
+the rejection reason, stop retries, and log the correct table/operation. Add a
+regression test. No dispatcher fix is part of the live-proof session.
+
+Also add explicit, credential-free chat enabled/subscribed startup diagnostics;
+the current service emits only the general “bIT awake” startup line.
