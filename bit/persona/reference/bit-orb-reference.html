@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bIT orb reference v3</title>
+<style>
+body{margin:0;background:#0d0d14;color:#e8e8f0;font-family:system-ui,-apple-system,sans-serif;padding:24px}
+.wrap{display:flex;gap:24px;flex-wrap:wrap;align-items:center;margin-bottom:20px}
+.stage{background:#06060b;border-radius:12px;padding:8px;display:flex;align-items:center;justify-content:center;width:300px;height:300px}
+.row{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 14px}
+button{background:transparent;color:#e8e8f0;border:1px solid #3a3d52;border-radius:8px;padding:6px 12px;font-size:13px;cursor:pointer}
+button.on{background:#23263a;border-color:#8a8fb0}
+button:focus-visible{outline:2px solid #5ef0ff;outline-offset:2px}
+.lbl{font-size:12px;color:#9a9db5;margin:0 0 6px}
+#st{font-size:18px;margin:0 0 4px}
+#sd{font-size:14px;color:#b4b7cc;margin:0;line-height:1.6;max-width:42ch}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="stage">
+    <svg id="svg" viewBox="0 0 300 300" width="284" role="img" aria-label="bIT">
+      <defs>
+        <linearGradient id="rg" x1="0" y1="0" x2="1" y2="1"><stop id="s1" offset="0" stop-color="#5ef0ff"/><stop id="s2" offset="1" stop-color="#b45cff"/></linearGradient>
+        <filter id="gl" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="6"/></filter>
+      </defs>
+      <ellipse id="floor" cx="150" cy="284" rx="70" ry="6" fill="#3d6bff" opacity="0.35" filter="url(#gl)"/>
+      <g id="spk"></g>
+      <g id="body">
+        <circle id="glow" cx="150" cy="145" r="112" fill="none" stroke="url(#rg)" stroke-width="16" filter="url(#gl)" opacity="0.6" transform="rotate(-90 150 145)"/>
+        <circle id="ring" cx="150" cy="145" r="112" fill="none" stroke="url(#rg)" stroke-width="5" stroke-linecap="round" transform="rotate(-90 150 145)"/>
+        <circle id="inner" cx="150" cy="145" r="105" fill="none" stroke="url(#rg)" stroke-width="1.2" opacity="0.45"/>
+        <circle cx="150" cy="145" r="100" fill="#040407"/>
+        <circle cx="150" cy="145" r="97" fill="none" stroke="#1b1e30" stroke-width="2"/>
+        <ellipse id="hl1" cx="128" cy="64" rx="24" ry="7" fill="#fff" opacity="0.85" transform="rotate(-14 128 64)"/>
+        <ellipse id="hl2" cx="160" cy="58" rx="6" ry="2.5" fill="#fff" opacity="0.6"/>
+        <g id="rim">
+          <path d="M66 175 Q72 205 92 222" fill="none" stroke="#2a2d40" stroke-width="4" stroke-linecap="round"/>
+          <path d="M234 175 Q228 205 208 222" fill="none" stroke="#2a2d40" stroke-width="4" stroke-linecap="round"/>
+        </g>
+        <path id="bL" fill="none" stroke-width="4.5" stroke-linecap="round"/>
+        <path id="bR" fill="none" stroke-width="4.5" stroke-linecap="round"/>
+        <rect id="fL" x="89" width="46" rx="2" fill="#0a0a14" stroke-width="2.2"/>
+        <rect id="fR" x="165" width="46" rx="2" fill="#0a0a14" stroke-width="2.2"/>
+        <g id="pup"></g>
+        <path id="mouth" fill="#fff"/>
+        <text id="timer" x="150" y="226" text-anchor="middle" style="font-size:12px;font-family:ui-monospace,monospace"></text>
+      </g>
+    </svg>
+  </div>
+  <div>
+    <p id="st"></p>
+    <p id="sd"></p>
+  </div>
+</div>
+
+<p class="lbl">State</p><div class="row" id="states"></div>
+<p class="lbl">Personality</p><div class="row" id="moods"></div>
+<p class="lbl">Reaction (one-shot)</p><div class="row" id="reacts"></div>
+<p class="lbl">Detail level</p><div class="row" id="details"></div>
+
+<script>
+// ---------- Spec tables (mirror bit/persona/character.md) ----------
+const STATES={
+  idle:["Idle","Floating, slow blink, eyes wander a little, happy smile."],
+  listen:["Listening","Brows up, little 'o' mouth, ring breathes."],
+  think:["Thinking","One pixel circles inside each eye; ring segment orbits; sparkles swirl."],
+  agent:["Running a task","Focused brows, eyes glance down at the work, dashed ring moves."],
+  lease:["Control lease","Has mouse and keyboard. Ring drains as the countdown."],
+  screen:["Watching screen","Eyes squint and a scan line sweeps the pixels."],
+  approve:["Needs approval","Everything goes amber, eyes wide, worried mouth, looking at you."],
+  sleep:["Offline","Eyes closed, sinks to rest, sparkles fade, ring gray."]
+};
+const MOODS={chill:["#5ef0ff","#b45cff"],hype:["#ffc04a","#ff4f7b"],chaotic:["#4fffb0","#ff4fd8"],gremlin:["#b6ff3b","#16c79a"],sage:["#9a8bff","#3b5bff"]};
+const REACT={celebrate:1.6,wince:1.2,curious:2.0,unsure:2.5};
+const DETAIL={full:284,simple:64,min:28};
+const MO={
+  smile:"M127 170 Q150 166 173 170 Q172 200 150 201 Q128 200 127 170Z",
+  big:"M120 166 Q150 160 180 166 Q178 208 150 209 Q122 208 120 166Z",
+  o:"M143 182 a7 8 0 1 0 14 0 a7 8 0 1 0 -14 0Z",
+  flat:"M134 180 L166 180 L166 184 L134 184Z",
+  focus:"M136 178 Q150 186 164 178 L164 182 Q150 190 136 182Z",
+  worry:"M134 188 Q150 176 166 188 L166 192 Q150 180 134 192Z",
+  sleep:"M136 180 Q150 190 164 180 L164 183 Q150 193 136 183Z"
+};
+const UNSURE_PIXELS=[0,1,2,5,7];      // rough "?" in the 3x3 grid
+const THINK_PATH=[0,1,2,5,8,7,6,3];   // pixel orbit order
+
+// ---------- Setup ----------
+let state="idle",mood="chill",reaction=null,rT0=0,detail="full",t0=performance.now();
+const $=i=>document.getElementById(i),NS="http://www.w3.org/2000/svg",C=2*Math.PI*112,EX=[112,188],EY=128;
+const cells=[[],[]];
+[0,1].forEach(e=>{for(let i=0;i<9;i++){const r=document.createElementNS(NS,"rect");r.setAttribute("rx",1);$("pup").appendChild(r);cells[e].push(r)}});
+const sp=[];
+for(let i=0;i<16;i++){const c=document.createElementNS(NS,"circle");$("spk").appendChild(c);sp.push({c,a:Math.random()*6.28,r:122+Math.random()*24,z:1+Math.random()*2,p:Math.random()*6})}
+
+function mk(box,keys,cur,label,fn){const b=$(box);b.innerHTML="";keys.forEach(k=>{const e=document.createElement("button");e.textContent=label(k);if(k===cur)e.className="on";e.onclick=()=>{fn(k);draw()};b.appendChild(e)})}
+const cap=k=>k[0].toUpperCase()+k.slice(1);
+function draw(){
+  mk("states",Object.keys(STATES),state,k=>STATES[k][0],k=>{state=k;t0=performance.now()});
+  mk("moods",Object.keys(MOODS),mood,cap,k=>mood=k);
+  mk("reacts",Object.keys(REACT),reaction,cap,k=>{reaction=k;rT0=performance.now()});
+  mk("details",Object.keys(DETAIL),detail,cap,k=>{detail=k;$("svg").setAttribute("width",DETAIL[k])});
+  $("st").textContent=STATES[state][0];$("sd").textContent=STATES[state][1];
+  $("svg").setAttribute("aria-label","bIT: "+STATES[state][0]);
+}
+draw();
+const vis=(id,on)=>$(id).setAttribute("visibility",on?"visible":"hidden");
+function brow(cx,lift,tilt,side){const b=100-lift,x1=cx-18,x2=cx+18,inner=side?x1:x2;const y1=b+(inner===x1?tilt:0),y2=b+(inner===x2?tilt:0);return `M${x1} ${y1} Q${cx} ${b-10} ${x2} ${y2}`}
+
+// ---------- Frame ----------
+function loop(now){
+  const t=(now-t0)/1000;
+  let rp=null;
+  if(reaction){const e=(now-rT0)/1000;if(e>REACT[reaction]){reaction=null;draw()}else rp=e/REACT[reaction]}
+  const rx=(reaction&&!["approve","sleep"].includes(state))?reaction:null; // approval and offline outrank reactions
+  let [c1,c2]=MOODS[mood];
+  if(state==="approve"){c1="#ffd166";c2="#ff8a3d"}
+  if(state==="sleep"){c1="#6b6f80";c2="#3a3e50"}
+  $("s1").setAttribute("stop-color",c1);$("s2").setAttribute("stop-color",c2);
+
+  let bob=state==="sleep"?8:Math.sin(t*1.3)*5;
+  if(rx==="celebrate")bob-=14*Math.sin(Math.PI*rp);
+  const shake=rx==="wince"?Math.sin(t*45)*3*(1-rp):0;
+  $("body").setAttribute("transform",`translate(${shake} ${bob})`);
+  $("floor").setAttribute("opacity",state==="sleep"?0.15:0.3-bob*0.02);$("floor").setAttribute("fill",c2);
+
+  // Ring
+  let op=1,da="none",off=0,tm="";
+  if(state==="listen")op=0.55+0.45*Math.sin(t*3);
+  if(state==="think"){da=C*0.22+" "+C;off=-t*300}
+  if(state==="agent"){da="16 10";off=-t*45}
+  if(state==="lease"){const L=40*60,left=Math.max(0,L-t*30);da=C*left/L+" "+C;tm=Math.floor(left/60)+":"+String(Math.floor(left%60)).padStart(2,"0")}
+  if(state==="approve")op=Math.floor(t*2)%2?1:0.35;
+  if(state==="sleep")op=0.5;
+  ["ring","glow"].forEach(id=>{const r=$(id);r.setAttribute("stroke-dasharray",da);r.setAttribute("stroke-dashoffset",off)});
+  $("ring").setAttribute("opacity",op);$("glow").setAttribute("opacity",op*0.55);
+  $("ring").setAttribute("stroke-width",detail==="min"?14:detail==="simple"?8:5);
+
+  // Eyes
+  const blink=["idle","listen","lease","agent"].includes(state)&&!rx&&(t%4.2)<0.13;
+  let h={screen:22,approve:40,sleep:3}[state]||34;
+  if(blink)h=3;
+  if(rx==="wince")h=16;
+  if(rx==="curious"||rx==="unsure")h=34;
+  ["fL","fR"].forEach(id=>{const f=$(id);f.setAttribute("height",h);f.setAttribute("y",EY-h/2);f.setAttribute("stroke",c2)});
+  let dx=Math.sin(t*0.6)*3,dy=0;
+  if(state==="agent"){dx=6;dy=4}
+  if(state==="approve"||state==="listen")dx=0;
+  if(rx==="curious")dx=6;
+  if(rx==="unsure")dx=0;
+  cells.forEach((row,e)=>row.forEach((r,i)=>{
+    const cx=EX[e];let on=1;
+    if(state==="think")on=i===THINK_PATH[Math.floor(t*8)%8]?1:0.12;
+    if(state==="screen")on=Math.floor(i/3)===Math.floor(t*3)%3?1:0.2;
+    if(state==="listen")on=0.6+0.4*Math.sin(t*3+i);
+    if(rx==="wince")on=Math.floor(i/3)===1?1:0;
+    if(rx==="unsure")on=UNSURE_PIXELS.includes(i)?1:0.15;
+    if(h<14)on=0;
+    let size=6,x=cx-10.5+(i%3)*7.5+(state==="think"?0:dx),y=EY-10.5+Math.floor(i/3)*7.5+dy;
+    if(detail==="min"){if(i!==4)on=0;size=24;x=cx-12;y=EY-12;if(state==="sleep")on=0.4}
+    r.setAttribute("width",size);r.setAttribute("height",size);
+    r.setAttribute("x",x);r.setAttribute("y",y);r.setAttribute("fill",c1);r.setAttribute("opacity",on);
+  }));
+
+  // Brows
+  const B={listen:[5,0],approve:[8,-6],agent:[-1,6],think:[2,4],screen:[-2,5],sleep:[-4,0]}[state]||[0,0];
+  let lL=B[0],lR=B[0];
+  if(rx==="celebrate"){lL+=6;lR+=6}
+  if(rx==="curious")lR+=8;
+  if(rx==="unsure")lL+=7;
+  $("bL").setAttribute("d",brow(EX[0],lL,B[1],0));$("bR").setAttribute("d",brow(EX[1],lR,B[1],1));
+  $("bL").setAttribute("stroke",c1);$("bR").setAttribute("stroke",c1);
+
+  // Mouth
+  let m={listen:"o",think:"flat",agent:"focus",lease:"focus",screen:"flat",approve:"worry",sleep:"sleep"}[state]||(mood==="hype"||mood==="chaotic"?"big":"smile");
+  if(rx)m={celebrate:"big",wince:"worry",curious:"o",unsure:"flat"}[rx];
+  if(detail==="simple"&&state!=="sleep"&&state!=="approve")m="smile";
+  $("mouth").setAttribute("d",MO[m]);
+
+  // Sparkles
+  const spd=state==="think"?0.8:mood==="hype"||mood==="chaotic"?0.25:0.05;
+  sp.forEach((s,i)=>{
+    const a=s.a+t*spd*(i%2?1:-1),rr=s.r+(rx==="celebrate"?30*rp:0);
+    s.c.setAttribute("cx",150+Math.cos(a)*rr);s.c.setAttribute("cy",145+bob+Math.sin(a)*rr);
+    s.c.setAttribute("r",s.z);s.c.setAttribute("fill",i%2?c1:c2);
+    let o=state==="sleep"?0.1:0.35+0.6*Math.abs(Math.sin(t*1.5+s.p));
+    if(rx==="celebrate")o=Math.min(1,o+0.4*(1-rp));
+    s.c.setAttribute("opacity",o);
+  });
+
+  // Level of detail
+  const full=detail==="full",min=detail==="min";
+  ["spk","bL","bR","hl2","rim","glow","inner","timer"].forEach(id=>vis(id,full));
+  ["fL","fR","mouth","hl1"].forEach(id=>vis(id,!min));
+  $("timer").textContent=tm;$("timer").setAttribute("fill",c1);
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
