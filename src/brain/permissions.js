@@ -1,3 +1,4 @@
+import { TASK_TOOLS, taskSchemas } from './chatTasks.js';
 import { noSync } from '../bitos/sync.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -11,7 +12,7 @@ export const EXPRESS_TOOL = 'mcp__presence__express';
 export const CUSTOM = [EXPRESS_TOOL, 'mcp__machines__list_machines', 'mcp__machines__machine_status', 'mcp__reminders__set_reminder', 'mcp__reminders__list_reminders', 'mcp__reminders__cancel_reminder'];
 const writes = new Set(['Write', 'Edit']);
 const inside = (base, file) => file === base || file.startsWith(base + path.sep);
-export function createPermissions({ sync = noSync, root = ROOT, approve = async () => false, notify = async () => {}, afterWrite = async () => {}, context = '', web, sessionKey = context, resolve, reminders, webAllowed = true, screen, control } = {}) {
+export function createPermissions({ sync = noSync, root = ROOT, approve = async () => false, notify = async () => {}, afterWrite = async () => {}, context = '', web, sessionKey = context, resolve, reminders, webAllowed = true, screen, control, tasks } = {}) {
   root = fs.realpathSync(root);
   const auditFile = path.join(root, 'data/audit.log');
   fs.mkdirSync(path.dirname(auditFile), { recursive: true, mode: 0o700 });
@@ -53,7 +54,13 @@ export function createPermissions({ sync = noSync, root = ROOT, approve = async 
     let result;
     try {
       if (signal?.aborted) throw new Error('Request cancelled');
-      if (['mcp__computer__computer','mcp__computer__launch_app'].includes(name)) {
+      if (/approval/i.test(name)) throw new Error('Approval decisions are owner buttons only');
+      if (TASK_TOOLS.includes(name)) {
+        if (!tasks || !String(context).startsWith('dash:')) throw new Error('Dashboard task tools unavailable');
+        const action = name.slice('mcp__tasks__'.length);
+        const validated = taskSchemas[action].parse(input);
+        result = { behavior: 'allow', updatedInput: validated };
+      } else if (['mcp__computer__computer','mcp__computer__launch_app'].includes(name)) {
         if (!control) throw new Error('Computer control unavailable; tainted and scheduled runs are forbidden.');
         await control.authorize(name==='mcp__computer__launch_app'?{...input,action:'launch_app',target:`Launch ${input.app}`}:input, { signal });
         result = { behavior: 'allow', updatedInput: input };

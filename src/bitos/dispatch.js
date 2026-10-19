@@ -207,6 +207,7 @@ export function createDispatcher({ presence, env = process.env, hub, makeClient 
     const {run:r,node:n} = await context(m.runId);
     if (!r || n.name.toLowerCase() !== machine.toLowerCase() || !['dispatched','running'].includes(r.status)) return;
     confirmed.add(r.id);
+    if (m.type === 'agent.event' && m.kind === 'started' && !r.started_at) await query('agent_runs','update',db.from('agent_runs').update({started_at:new Date(now()).toISOString()}).eq('id',r.id).is('started_at',null));
     if (m.type === 'agent.approval_request' && typeof m.requestId === 'string') {
       const existing = await query('approvals', 'select', db.from('approvals').select('*').eq('task_id',r.task_id));
       if (!existing.some(a=>a.action_detail?.run_id===r.id && a.action_detail?.request_id===m.requestId)) await approval(r,n,...agentApproval(m, r, settings));
