@@ -23,8 +23,10 @@ anything irreversible.
    take a risky action. Gremlin can dare Ozzy into things; he still asks first.
 2. Honest face. When he's genuinely unsure, he shows it (the `unsure`
    reaction) and says so. He never fakes confidence with his face or words.
-3. The screen-watching indicator tells the truth. It's driven by what each
-   machine reports about its own capture, not by what the brain believes.
+3. Screen state lasts for an active screen grant. The actual-capture indicator
+   and stronger scan pulse tell the truth: each machine reports screen capture
+   only while taking a screenshot. A node reporting capture without a grant
+   still forces screen state; the brain never hides actual capture.
 4. He earns attention. Only approvals and an expiring lease may interrupt.
    Everything else is ambient.
 
@@ -69,7 +71,7 @@ Exactly one state is active. When several apply, the highest priority wins:
 | think | One segment orbits | One pixel circles the grid | Slightly focused | Flat |
 | agent | Dashed, moving | Glance down-right at the work | Focused | Small focused smile |
 | lease | Drains as the countdown; time left shown under the mouth | Full grid | Neutral | Focused |
-| screen | Steady | Squint; a scan row sweeps the grid | Focused | Flat |
+| screen | Steady while a screen grant is active; stronger one-shot pulse for each actual screenshot | Squint with a gentle scan during the grant; brighter scan sweep when the node reports an actual screenshot | Focused | Flat |
 | approve | Amber, blinking | Wide, centered, looking at you | High, worried | Worried |
 | offline | Gray, dim | Closed | Lowered | Sleepy |
 

@@ -76,3 +76,42 @@ test('runner lifecycle exposes think, restores idle and registers the in-process
  assert.match(await runner.run('thread','Something unknowable'),/unsure/);
  assert.equal(presence.value.state,'idle');
 });
+
+test('active screen grant means screen without actual capture; expiration removes it', () => {
+ const inputs={screenGrants:{g:{node:'OZZY-AI',endsAt:now+60000}},nodes:{'OZZY-AI':{capture:{screen:false,input:false}}}};
+ const active=computePresence(inputs,now);
+ assert.equal(active.state,'screen');assert.equal(active.node,'OZZY-AI');
+ assert.deepEqual(active.screenGrants,['OZZY-AI']);assert.deepEqual(active.watching,[]);
+ assert.equal(computePresence(inputs,now+60000).state,'idle');
+ assert.deepEqual(computePresence(inputs,now+60000).screenGrants,[]);
+ inputs.nodes['OZZY-AI'].capture.screen=true;
+ assert.equal(computePresence(inputs,now+60000).state,'screen');
+ assert.deepEqual(computePresence(inputs,now+60000).watching,['OZZY-AI']);
+});
+
+test('ScreenGrants callbacks track grant start/revoke and capture pulses only on rising node truth', () => {
+ let clock=now;const hub=new PresenceHub({now:()=>clock});
+ hub.observe('leaseStarted',{id:'s',machine:'OZZY-AI',level:'watch',expiresAt:new Date(now+60000).toISOString()});
+ hub.observe('nodeSeen',{machine:'OZZY-AI',capture:{screen:false,input:true}});
+ assert.equal(hub.value.state,'screen');assert.equal(hub.value.capturePulse,null);
+ hub.observe('nodeSeen',{machine:'OZZY-AI',capture:{screen:true,input:true}});
+ const at=hub.value.capturePulse.at;assert.equal(hub.value.capturePulse.node,'OZZY-AI');
+ clock+=200;hub.observe('nodeSeen',{machine:'OZZY-AI',capture:{screen:true,input:true}});
+ assert.equal(hub.value.capturePulse.at,at);
+ hub.observe('nodeSeen',{machine:'OZZY-AI',capture:{screen:false,input:true}});
+ assert.equal(hub.value.state,'screen');assert.deepEqual(hub.value.watching,[]);
+ clock+=1000;hub.recompute();assert.equal(hub.value.capturePulse,null);
+ hub.observe('leaseEnded',{id:'s'});assert.equal(hub.value.state,'idle');
+ clock++;hub.observe('nodeSeen',{machine:'OZZY-AI',capture:{screen:true,input:false}});
+ assert.equal(hub.value.state,'screen');assert.notEqual(hub.value.capturePulse.at,at);hub.close();
+});
+
+test('capture pulse strengthens the scan at every size without overriding approve/offline', () => {
+ for(const size of [28,48,284]){
+  const normal=faceFor({state:'screen',size,t:1});
+  const pulse=faceFor({state:'screen',size,t:1,capturePulse:{progress:0.25}});
+  assert.ok(pulse.ring['stroke-width']>normal.ring['stroke-width']);
+  if(size>=40){assert.equal(pulse.pupil[0][0].opacity,1);assert.equal(pulse.pupil[0][3].opacity,0.08);}
+ }
+ for(const state of ['approve','offline'])assert.deepEqual(faceFor({state,capturePulse:{progress:0.2}}),faceFor({state}));
+});

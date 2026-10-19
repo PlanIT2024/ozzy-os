@@ -1,0 +1,80 @@
+[
+  {
+    "surface": "desktop",
+    "seenAt": "2026-10-19T16:05:23.366Z",
+    "presence": {
+      "state": "offline",
+      "mood": "chill",
+      "reaction": null,
+      "node": null,
+      "lease": null,
+      "watching": [],
+      "attention": "ambient"
+    },
+    "title": "bIT: offline",
+    "gradient": [
+      "#6b6f80",
+      "#3a3e50"
+    ]
+  },
+  {
+    "surface": "desktop",
+    "seenAt": "2026-10-19T16:05:23.465Z",
+    "presence": {
+      "mood": "chill",
+      "node": null,
+      "lease": null,
+      "state": "idle",
+      "reaction": null,
+      "watching": [],
+      "attention": "ambient",
+      "updatedAt": "2026-10-19T16:04:27.183Z",
+      "capturePulse": null,
+      "screenGrants": []
+    },
+    "title": "bIT: idle",
+    "gradient": [
+      "#5ef0ff",
+      "#b45cff"
+    ]
+  },
+  {
+    "surface": "phone-viewport",
+    "seenAt": "2026-10-19T16:05:23.562Z",
+    "presence": {
+      "state": "offline",
+      "mood": "chill",
+      "reaction": null,
+      "node": null,
+      "lease": null,
+      "watching": [],
+      "attention": "ambient"
+    },
+    "title": "bIT: offline",
+    "gradient": [
+      "#6b6f80",
+      "#3a3e50"
+    ]
+  },
+  {
+    "surface": "phone-viewport",
+    "seenAt": "2026-10-19T16:05:23.821Z",
+    "presence": {
+      "mood": "chill",
+      "node": null,
+      "lease": null,
+      "state": "idle",
+      "reaction": null,
+      "watching": [],
+      "attention": "ambient",
+      "updatedAt": "2026-10-19T16:04:27.183Z",
+      "capturePulse": null,
+      "screenGrants": []
+    },
+    "title": "bIT: idle",
+    "gradient": [
+      "#5ef0ff",
+      "#b45cff"
+    ]
+  }
+]

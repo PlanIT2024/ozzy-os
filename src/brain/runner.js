@@ -61,6 +61,7 @@ export class Runner {
     this.reminders = reminders || new Reminders({ root });
     this.screens = screens || new ScreenGrants({ root, sync });
     this.controls = controls || new ControlGrants({ root, hub, sync, screens: this.screens });
+    for (const g of Object.values(this.screens.state?.grants || {})) if (!g.revokedAt && Date.parse(g.expiresAt) > Date.now()) this.presence?.observe('leaseStarted', { ...g, level: 'watch' });
     for (const g of Object.values(this.controls.state?.grants || {})) if (!g.revokedAt && Date.parse(g.expiresAt) > Date.now()) this.presence?.observe('leaseStarted', { ...g, level: 'control' });
     this.transcript = new Transcript(root);
     this.sessionFile = path.join(root, 'data/sessions.json');

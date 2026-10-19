@@ -1,0 +1,92 @@
+[
+  {
+    "name": "owner session identity matches brain configuration",
+    "ok": true,
+    "detail": "{\"configuredOwnerId\":\"102c7289-e4eb-4691-85ee-a1f1b099d307\",\"authenticatedOwnerId\":\"102c7289-e4eb-4691-85ee-a1f1b099d307\"}"
+  },
+  {
+    "name": "brain/service role can write",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "name": "owner receives live postgres change (publication membership)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "name": "owner can read exactly own row",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "name": "other authenticated user cannot read",
+    "ok": true,
+    "detail": "0 rows"
+  },
+  {
+    "name": "row with another owner_id is invisible to owner session",
+    "ok": true,
+    "detail": "0 rows"
+  },
+  {
+    "name": "anonymous cannot read",
+    "ok": true,
+    "detail": "42501"
+  },
+  {
+    "name": "owner cannot update",
+    "ok": true,
+    "detail": "42501"
+  },
+  {
+    "name": "owner cannot insert",
+    "ok": true,
+    "detail": "42501"
+  },
+  {
+    "name": "owner cannot delete",
+    "ok": true,
+    "detail": "42501"
+  },
+  {
+    "name": "other authenticated user cannot update",
+    "ok": true,
+    "detail": "42501"
+  },
+  {
+    "name": "other authenticated user cannot insert",
+    "ok": true,
+    "detail": "42501"
+  },
+  {
+    "name": "other authenticated user cannot delete",
+    "ok": true,
+    "detail": "42501"
+  },
+  {
+    "name": "anonymous cannot update",
+    "ok": true,
+    "detail": "42501"
+  },
+  {
+    "name": "anonymous cannot insert",
+    "ok": true,
+    "detail": "42501"
+  },
+  {
+    "name": "anonymous cannot delete",
+    "ok": true,
+    "detail": "42501"
+  },
+  {
+    "name": "temporary RLS subject removed",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "name": "original owner binding restored",
+    "ok": true,
+    "detail": ""
+  }
+]

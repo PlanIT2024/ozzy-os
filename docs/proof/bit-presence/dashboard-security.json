@@ -1,0 +1,19 @@
+[
+  {
+    "check": "dashboard signed in as configured owner reads singleton",
+    "ok": true
+  },
+  {
+    "check": "actual dashboard receives realtime update without refresh",
+    "ok": true
+  },
+  {
+    "check": "browser runtime errors",
+    "ok": true,
+    "errors": []
+  },
+  {
+    "check": "original row restored",
+    "ok": true
+  }
+]

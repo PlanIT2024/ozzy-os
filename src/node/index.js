@@ -33,7 +33,7 @@ export function startNode({ transport = process.env.NODE_TRANSPORT || 'local', u
   const events = new EventEmitter();
   let ws, relay, peer, reconnect, pulse, handshakeTimer, stopped = false, connected = false, attempt = 0, busy = false, screenAvailable = false, inputAvailable = false, checkingScreen = false, agentAvailable = agents.available();
   let screenCapturing = false;
-  const captureState = () => ({ screen: screenCapturing || input.capturing === true, input: input.capturing === true });
+  const captureState = () => ({ screen: screenCapturing, input: input.capturing === true });
   const reportCapture = () => { if (peer?.state === 'open') { try { peer.send({ type: 'heartbeat', capture: captureState() }); } catch { recover('capture status delivery failed'); } } };
   function transition(next) { if (connected !== next) { connected = next; agents.connectionState(next); log(`bit-node ${machine} ${next ? 'connected' : 'disconnected'}`); } }
   function clearPeer() { void input.close(); clearTimeout(handshakeTimer); clearInterval(pulse); peer?.close(); peer = null; transition(false); }

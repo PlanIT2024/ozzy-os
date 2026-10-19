@@ -14,7 +14,7 @@ The dashboard uses its existing authenticated Supabase mirror and Postgres realt
 - Control grants: start/end, active restored grants, original expiry and duration. No permissions, lease durations or approval gates were changed.
 - Discord ApprovalRelay: pending/decided via existing mirror callbacks, also when the mirror is disabled.
 - Reminder delivery: curious.
-- Node hello and heartbeat: actual reported capture state. Missing capture defaults to false. Input capture begins after successful backend startup and ends after backend shutdown; a screenshot operation reports start/end immediately rather than waiting for the 30-second heartbeat. Active Linux RemoteDesktop sessions report both screen and input. Screen grants alone never imply watching.
+- Node hello and heartbeat: actual reported capture state. Missing capture defaults to false. Input capture begins after successful backend startup and ends after backend shutdown; a screenshot operation reports start/end immediately rather than waiting for the 30-second heartbeat. Active Linux RemoteDesktop sessions report input control; screen is true only for an actual screenshot operation. Screen grants now hold screen state; the watching list and stronger capture pulse still require node-reported actual screenshot capture. See the follow-up live-proof report.
 - `/mood`: existing saved preference, with New York sage hours computed independently of the server timezone.
 - `express`: in-process MCP tool, exact permission name `mcp__presence__express`, available in tainted threads, one accepted expression per ten seconds across runner sessions.
 
@@ -57,3 +57,8 @@ Not performed: sending a real message and watching a physical phone, eliciting a
 - Dashboard: `apps/dashboard/src/BitPresence.tsx`, `apps/dashboard/src/bit-orb.d.ts`, `apps/dashboard/src/App.tsx`, `apps/dashboard/src/main.tsx`, `apps/dashboard/src/style.css`, `apps/dashboard/vite.config.ts`.
 - Database/tests: `supabase/migrations/0005_bit_presence.sql`, `test/presence.test.js`.
 - Proof: this report and the three PNG files in `docs/proof/bit-presence/`.
+
+
+## Follow-up
+
+The later security gate passed and screen semantics were revised at the owner's request. Current implementation and validation details superseding the original live-proof status are in `docs/bit-presence-live-proof.md`.

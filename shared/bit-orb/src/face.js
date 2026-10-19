@@ -18,7 +18,7 @@ function brow(cx,lift,tilt,side){const b=100-lift,x1=cx-18,x2=cx+18,inner=side?x
 
 
 export const detailFor = size => size >= 96 ? 'full' : size >= 40 ? 'simple' : 'min';
-export function faceFor({ state = 'idle', mood = 'chill', reaction = null, leaseLeft = 0, leaseTotal = 1, t = 0, size = 300, reducedMotion = false, pointer = {x:0,y:0}, yawning = false }) {
+export function faceFor({ state = 'idle', mood = 'chill', reaction = null, leaseLeft = 0, leaseTotal = 1, t = 0, size = 300, reducedMotion = false, pointer = {x:0,y:0}, yawning = false, capturePulse = null }) {
   if (!Object.hasOwn(MOODS,mood)) mood = 'chill';
   if (reducedMotion) t = 1;
   const detail = detailFor(size), attrs = {};
@@ -33,7 +33,7 @@ export function faceFor({ state = 'idle', mood = 'chill', reaction = null, lease
   let [c1,c2]=MOODS[mood];
   if(state==="approve"){c1="#ffd166";c2="#ff8a3d"}
   if(state==="offline"){c1="#6b6f80";c2="#3a3e50"}
-  $("s1").setAttribute("stop-color",c1);$("s2").setAttribute("stop-color",c2);
+  $("color1").setAttribute("stop-color",c1);$("color2").setAttribute("stop-color",c2);
 
   let bob=state==="offline"?8:Math.sin(t*1.3)*5;
   if(rx==="celebrate")bob-=14*Math.sin(Math.PI*rp);
@@ -53,6 +53,13 @@ export function faceFor({ state = 'idle', mood = 'chill', reaction = null, lease
   $("ring").setAttribute("opacity",op);$("glow").setAttribute("opacity",op*0.55);
   $("ring").setAttribute("stroke-width",detail==="min"?14:detail==="simple"?8:5);
 
+  // One stronger scan per node-reported screenshot, independent of the grant.
+  const scan = capturePulse && !['approve','offline'].includes(state);
+  const pulseProgress = capturePulse?.progress || 0;
+  if (scan) {
+    $("ring").setAttribute('stroke-width', (detail==='min'?14:detail==='simple'?8:5) + 4*(1-pulseProgress));
+    $("glow").setAttribute('opacity', 0.95 - 0.4*pulseProgress);
+  }
   // Eyes
   const blink=["idle","listen","lease","agent"].includes(state)&&!rx&&(t%4.2)<0.13;
   let h={screen:22,approve:40,offline:3}[state]||34;
@@ -68,7 +75,8 @@ export function faceFor({ state = 'idle', mood = 'chill', reaction = null, lease
   cells.forEach((row,e)=>row.forEach((r,i)=>{
     const cx=EX[e];let on=1;
     if(state==="think")on=i===THINK_PATH[Math.floor(t*8)%8]?1:0.12;
-    if(state==="screen")on=Math.floor(i/3)===Math.floor(t*3)%3?1:0.2;
+    if(state==="screen")on=Math.floor(i/3)===Math.floor(t*3)%3?0.7:0.25;
+    if(scan)on=Math.floor(i/3)===Math.min(2,Math.floor(pulseProgress*3))?1:0.08;
     if(state==="listen")on=0.6+0.4*Math.sin(t*3+i);
     if(rx==="wince")on=Math.floor(i/3)===1?1:0;
     if(rx==="unsure")on=UNSURE_PIXELS.includes(i)?1:0.15;

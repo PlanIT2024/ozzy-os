@@ -1,12 +1,12 @@
 import { faceFor, REACT } from './face.js';
 export const STATE_WORDS = { idle:'idle', listen:'listening', think:'thinking', agent:'running a task', lease:'controlling a machine', screen:'watching screen', approve:'needs approval', offline:'offline' };
 export class BitOrb extends (globalThis.HTMLElement || class {}) {
-  static observedAttributes = ['state','mood','reaction','reaction-at','lease-ends-at','lease-total','node'];
+  static observedAttributes = ['state','mood','reaction','reaction-at','lease-ends-at','lease-total','node','capture-pulse-at'];
   constructor() {
     super(); this.attachShadow({mode:'open'});
     this.shadowRoot.innerHTML = `<style>:host{display:inline-block;width:48px;height:48px}svg{display:block;overflow:visible}</style>    <svg  viewBox="0 0 300 300" width="100%" height="100%" role="img" aria-label="bIT">
       <defs>
-        <linearGradient id="rg" x1="0" y1="0" x2="1" y2="1"><stop id="s1" offset="0" stop-color="#5ef0ff"/><stop id="s2" offset="1" stop-color="#b45cff"/></linearGradient>
+        <linearGradient id="rg" x1="0" y1="0" x2="1" y2="1"><stop id="color1" offset="0" stop-color="#5ef0ff"/><stop id="color2" offset="1" stop-color="#b45cff"/></linearGradient>
         <filter id="gl" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="6"/></filter>
       </defs>
       <ellipse id="floor" cx="150" cy="284" rx="70" ry="6" fill="#3d6bff" opacity="0.35" filter="url(#gl)"/>
@@ -53,7 +53,7 @@ export class BitOrb extends (globalThis.HTMLElement || class {}) {
     this._presence=value;this.wake();
   }
   get presence(){return this._presence;}
-  data(){return this._presence || {state:this.getAttribute('state')||'idle',mood:this.getAttribute('mood')||'chill',reaction:{kind:this.getAttribute('reaction'),at:this.getAttribute('reaction-at')},lease:{endsAt:this.getAttribute('lease-ends-at'),totalSec:Number(this.getAttribute('lease-total'))},node:this.getAttribute('node')};}
+  data(){return this._presence || {state:this.getAttribute('state')||'idle',mood:this.getAttribute('mood')||'chill',reaction:{kind:this.getAttribute('reaction'),at:this.getAttribute('reaction-at')},lease:{endsAt:this.getAttribute('lease-ends-at'),totalSec:Number(this.getAttribute('lease-total'))},capturePulse:{at:this.getAttribute('capture-pulse-at')},node:this.getAttribute('node')};}
   draw(){
     const p=this.data(),now=Date.now();
     const state=p.updatedAt && now-Date.parse(p.updatedAt)>90000?'offline':p.state;
@@ -61,7 +61,9 @@ export class BitOrb extends (globalThis.HTMLElement || class {}) {
     const reaction=age>=0&&age<REACT[p.reaction?.kind]?{kind:p.reaction.kind,progress:age/REACT[p.reaction.kind]}:null;
     const label='bIT: '+(STATE_WORDS[state]||'idle')+(p.node&&['agent','lease','screen'].includes(state)?' on '+p.node:'');
     if(this.title!==label){this.title=label;this.setAttribute('aria-label',label);}
-    const f=faceFor({state,mood:p.mood,reaction,leaseLeft:Math.max(0,(Date.parse(p.lease?.endsAt)-now)/1000)||0,leaseTotal:p.lease?.totalSec||1,t:now/1000,size:this.size,reducedMotion:this.motion.matches,pointer:this.pointer,yawning:now-this.changedAt>600000&&(now-this.changedAt)%60000<2500});
+    const pulseAge=(now-Date.parse(p.capturePulse?.at))/1000;
+    const capturePulse=pulseAge>=0 && pulseAge<1.2 ? {progress:pulseAge/1.2} : null;
+    const f=faceFor({capturePulse,state,mood:p.mood,reaction,leaseLeft:Math.max(0,(Date.parse(p.lease?.endsAt)-now)/1000)||0,leaseTotal:p.lease?.totalSec||1,t:now/1000,size:this.size,reducedMotion:this.motion.matches,pointer:this.pointer,yawning:now-this.changedAt>600000&&(now-this.changedAt)%60000<2500});
     for(const [id,attrs]of Object.entries(f.attrs))for(const [key,value]of Object.entries(attrs))this.parts[id]?.setAttribute(key,String(value));
     this.parts.timer.textContent=f.timer;
   }
