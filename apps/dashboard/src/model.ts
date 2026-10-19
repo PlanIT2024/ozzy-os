@@ -19,7 +19,7 @@ export function lastSeen(value: string | null, now = Date.now()) {
 export function tasksInColumn(tasks: Task[], status: typeof columns[number]) { return tasks.filter(task => task.status === status); }
 export function quickAddPayload(workspace_id: string, title: string) { return { workspace_id, title: title.trim(), status: 'inbox', source: 'typed' }; }
 
-export interface Run { id: string; task_id: string; node_id: string; executor: string; folder_alias: string; prompt: string; lease_minutes: number; status: string; stop_requested: boolean; branch: string | null; summary: string | null; created_at: string }
+export interface Run { started_at?: string | null; id: string; task_id: string; node_id: string; executor: string; folder_alias: string; prompt: string; lease_minutes: number; status: string; stop_requested: boolean; branch: string | null; summary: string | null; created_at: string }
 export function machineOptions(node: Node, now = Date.now()) {
  const agent = node.metadata?.agent;
  if (!node.capabilities.includes('run_agent')) return { reason: 'Not enabled', executors: [], folders: [], leases: [] };

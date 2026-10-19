@@ -20,3 +20,12 @@
 .approval-detail .plain { margin-bottom: 4px; }
 .detail-toggle { font-size: .85rem; }
 .bit-panel-body article > a { display: inline-block; margin: 0 12px 12px 0; }
+
+@media(min-width:640px){.bit-panel{width:480px;}}
+.dashboard-chat { margin-top: 20px; border-top: 1px solid var(--border); padding-top: 12px; }
+.chat-messages { max-height: 45dvh; min-height: 100px; overflow-y: auto; overflow-wrap: anywhere; overscroll-behavior: contain; }
+.chat-message.owner { margin-left: 20px; }
+.chat-message .approval-card, .chat-task-card { margin-top: 12px; }
+.dashboard-chat textarea { width:100%; box-sizing:border-box; }
+.dashboard-chat select { max-width: 100%; }
+.sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }

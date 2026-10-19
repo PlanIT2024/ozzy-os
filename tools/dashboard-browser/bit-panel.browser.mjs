@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { chromium, webkit } from 'playwright';
 
 let server, base;
@@ -41,7 +41,7 @@ async function inside(page) {
   const panel = document.querySelector('.bit-panel'); if (!panel?.open) return false;
   const r = panel.getBoundingClientRect();
   return r.width > 0 && r.height > 0 && r.left >= -0.5 && r.top >= -0.5 && r.right <= innerWidth + 0.5 && r.bottom <= innerHeight + 0.5;
- });
+ }).catch(async error=>{const geometry=await page.evaluate(()=>({viewport:[innerWidth,innerHeight],panel:document.querySelector('.bit-panel')?.getBoundingClientRect().toJSON(),open:document.querySelector('.bit-panel')?.open}));throw new Error(error.message+' '+JSON.stringify(geometry));});
  const box = await page.getByRole('dialog').boundingBox(), viewport = page.viewportSize();
  assert.ok(box.x >= -0.5 && box.y >= -0.5);
  assert.ok(box.x + box.width <= viewport.width + 0.5);
@@ -194,7 +194,7 @@ test('approval preview expands and active activity uses live-log and stop callba
    assert.ok(await preview.count());
    const activity=panel.getByRole('region',{name:'Current activity'});
    await activity.getByText('QA task title',{exact:true}).waitFor();
-   await activity.getByText('MacBook · Elapsed: 0:00 since requested',{exact:true}).waitFor();
+   await activity.getByText('MacBook · running 0:00',{exact:true}).waitFor();
    assert.equal(await panel.getByText('No machines being watched',{exact:true}).count(),0);
    await activity.getByRole('button',{name:'Stop',exact:true}).click();
    await activity.getByRole('button',{name:'Stopping…',exact:true}).waitFor();
@@ -205,4 +205,50 @@ test('approval preview expands and active activity uses live-log and stop callba
    assert.equal(await page.evaluate(()=>window.viewedTask),'task');
   }finally{await page.close();}
  }
+});
+
+async function chatReady(browser,width) {
+ const page=await browser.newPage({viewport:{width,height:width===320?568:844},isMobile:width<640,hasTouch:width<640});
+ await page.route('**/src/client.ts',route=>route.fulfill({contentType:'application/javascript',body:readFileSync(new URL('./chat-client.fixture.mjs',import.meta.url),'utf8')}));
+ await page.goto(base+'/scripts/fixtures/bit-panel.html?chat=1');
+ await page.getByRole('button',{name:'Show bIT presence'}).click();await inside(page);
+ await page.getByRole('region',{name:'Chat with bIT'}).locator('.chat-message').getByText('I made a task. This action needs your decision.',{exact:true}).waitFor();
+ return page;
+}
+for(const width of [320,390,768,1280])test(`chat sheet viewport and shared cards at ${width}`,async()=>{
+ for(const {browser} of browsers){const page=await chatReady(browser,width);try{
+  const panel=page.getByRole('dialog'),chat=panel.getByRole('region',{name:'Chat with bIT'});
+  const box=await panel.boundingBox();assert.ok(box.x>=0&&box.y>=0&&box.x+box.width<=width+.5&&box.y+box.height<=page.viewportSize().height+.5);
+  if(process.env.BIT_PANEL_PROOF_DIR){await chat.getByRole('textbox',{name:'Message bIT'}).scrollIntoViewIfNeeded();await page.screenshot({path:`${process.env.BIT_PANEL_PROOF_DIR}/chat-${browsers.find(item=>item.browser===browser).name}-${width}.png`});}
+  const card=chat.locator('[data-approval-id="chat-approval"]');await card.getByRole('button',{name:'Approve',exact:true}).click();assert.deepEqual(await page.evaluate(()=>window.decisions),[]);
+  await card.getByRole('button',{name:'Approve command?',exact:true}).click();await card.getByText('Approved',{exact:true}).waitFor();assert.deepEqual(await page.evaluate(()=>window.decisions),[{id:'chat-approval',status:'approved'}]);
+  await chat.getByRole('button',{name:'Undo',exact:true}).click();await chat.getByText('Undone',{exact:true}).waitFor();assert.equal(await page.evaluate(()=>window.chatDB.tables.tasks[0].status),'cancelled');
+  const input=chat.getByRole('textbox',{name:'Message bIT'});await input.fill('First line');await input.press('Shift+Enter');await input.type('Second line');assert.equal(await input.inputValue(),'First line\nSecond line');await input.press('Enter');
+  await page.waitForFunction(()=>window.chatDB.tables.chat_messages.some(m=>m.author==='owner'));
+  const owner=await page.evaluate(()=>window.chatDB.tables.chat_messages.find(m=>m.author==='owner'));assert.equal(owner.body,'First line\nSecond line');assert.equal(owner.cards,null);assert.equal(owner.owner_id,'owner');assert.equal(await input.inputValue(),'');
+  await chat.getByRole('button',{name:'New chat',exact:true}).click();await page.waitForFunction(()=>window.chatDB.tables.conversations.length===2);assert.ok(await chat.getByRole('status').count());
+  assert.equal(await page.evaluate(()=>window.chatDB.writes.some(w=>w.table==='approvals')),false,'decisions use shared fixture callback, no new chat write path');
+ }finally{await page.close();}}
+});
+test('task card opens the existing board task and remote expiry updates approval in chat',async()=>{
+ for(const {browser} of browsers){const page=await chatReady(browser,390);try{
+  const chat=page.getByRole('region',{name:'Chat with bIT'});await page.evaluate(()=>{window.chatDB.tables.approvals[0].expires_at=new Date(0).toISOString();window.chatDB.notify();});await chat.locator('[data-approval-id="chat-approval"]').getByText('Expired',{exact:true}).waitFor();
+  await chat.getByRole('link',{name:'Open task on board'}).click();await page.getByRole('dialog').waitFor({state:'detached'});assert.equal(await page.evaluate(()=>window.viewedBoard),'chat-task');
+ }finally{await page.close();}}
+});
+
+test('update Undo reverts previous fields and null started_at omits running time',async()=>{
+ for(const {browser} of browsers){const page=await chatReady(browser,390);try{
+  await page.evaluate(()=>{const db=window.chatDB;db.tables.tasks[0].title='Changed title';const card=db.tables.chat_messages[0].cards[0];card.created=false;card.before={title:'Original title'};card.changed={title:'Changed title'};db.notify();});
+  const chat=page.getByRole('region',{name:'Chat with bIT'});await chat.getByRole('button',{name:'Undo',exact:true}).click();await chat.getByText('Undone',{exact:true}).waitFor();assert.equal(await page.evaluate(()=>window.chatDB.tables.tasks[0].title),'Original title');
+  await page.evaluate(()=>window.qa.noStart());const activity=page.getByRole('region',{name:'Current activity'});await activity.getByText('MacBook',{exact:true}).waitFor();assert.equal(await activity.getByText(/running [0-9]/).count(),0);
+ }finally{await page.close();}}
+});
+
+test('completed replies are announced after realtime streaming updates',async()=>{
+ for(const {browser} of browsers){const page=await chatReady(browser,390);try{
+  await page.evaluate(()=>{const db=window.chatDB;db.tables.chat_messages.push({id:'live-reply',created_at:new Date(Date.now()+1000).toISOString(),conversation_id:'conversation',workspace_id:'ws',owner_id:'owner',author:'bit',body:'Streaming text',status:'streaming',cards:null});db.notify();});
+  const chat=page.getByRole('region',{name:'Chat with bIT'});await chat.locator('.chat-message').getByText('Streaming text',{exact:true}).waitFor();assert.equal(await chat.locator('.sr-only').innerText(),'I made a task. This action needs your decision.');
+  await page.evaluate(()=>{const db=window.chatDB;Object.assign(db.tables.chat_messages.at(-1),{body:'New completed reply',status:'done'});db.notify();});await page.waitForFunction(()=>document.querySelector('.dashboard-chat .sr-only')?.textContent==='New completed reply');
+ }finally{await page.close();}}
 });

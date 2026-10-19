@@ -1,0 +1,21 @@
+{
+  "build": "passed (TypeScript, Vite, credential scan)",
+  "dashboard_unit_tests": 26,
+  "repository_tests": 265,
+  "browser_scenarios": 16,
+  "browser_engines": [
+    "Chromium",
+    "WebKit"
+  ],
+  "widths": [
+    320,
+    390,
+    768,
+    1280
+  ],
+  "postgres": "local PostgreSQL 16; migrations 0001\u20130007, 0007 replay, verification queries, RLS, triggers, service-only RPC, audit rollback passed",
+  "migration_applied_to_supabase": false,
+  "brain_restarted": false,
+  "deployment_performed": false,
+  "live_proof_performed": false
+}
